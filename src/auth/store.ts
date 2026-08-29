@@ -3,6 +3,7 @@ import { OAuthClientInformationFull } from '@modelcontextprotocol/sdk/shared/aut
 import { OAuthRegisteredClientsStore } from '@modelcontextprotocol/sdk/server/auth/clients.js';
 import fs from 'fs';
 import { storageManager } from './utils/storage-manager';
+import { resolveClientIdMetadata } from './utils/client-id-metadata';
 import { advertisedScopes } from './config';
 import { StorageData } from './types';
 import { logger } from '../utils/logger';
@@ -233,7 +234,15 @@ export class AuthStore implements OAuthRegisteredClientsStore {
   async getClient(id: string): Promise<OAuthClientInformationFull | undefined> {
     await this.initialize();
     const client = this.storageDataCache.clients[id];
-    return client && this.withDefaultScope(client);
+    if (client) {
+      return this.withDefaultScope(client);
+    }
+    // A client that identifies itself by URL never registered here and never
+    // will -- the document at that URL is its registration. Nothing is written
+    // to storage: the client_id is resolvable on demand and portable across
+    // authorization servers, which is the point of it.
+    const resolved = await resolveClientIdMetadata(id);
+    return resolved && this.withDefaultScope(resolved);
   }
 
   async removeClient(clientId: string): Promise<void> {

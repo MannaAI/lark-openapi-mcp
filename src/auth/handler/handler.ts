@@ -1,7 +1,6 @@
-import { randomBytes } from 'crypto';
 import { Express, Request, Response, NextFunction } from 'express';
 import { requireBearerAuth } from '@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js';
-import { mcpAuthRouter } from '@modelcontextprotocol/sdk/server/auth/router.js';
+import { mcpAuthRouter, createOAuthMetadata } from '@modelcontextprotocol/sdk/server/auth/router.js';
 import { metadataHandler } from '@modelcontextprotocol/sdk/server/auth/handlers/metadata.js';
 import { LarkOIDC2OAuthServerProvider, LarkOAuth2OAuthServerProvider } from '../provider';
 import { authStore } from '../store';
@@ -13,36 +12,6 @@ import { logger } from '../../utils/logger';
 // absent on purpose: the SDK's client authentication reads client_id and
 // client_secret out of the request body only.
 const SUPPORTED_CLIENT_AUTH_METHODS = ['client_secret_post', 'none'];
-
-// ChatGPT registers with token_endpoint_auth_method: 'none' and then refuses the
-// registration unless it comes back with a client_secret anyway -- it asks not to
-// be given a credential and requires one in the same breath. Honouring 'none' the
-// way RFC 7591 says to is what makes it abandon the flow the moment it registers,
-// with no error and no request to /authorize. So give it a secret to look at.
-//
-// Nothing verifies this value: the client is still stored as public, so the SDK's
-// token endpoint skips client authentication entirely and does not care whether
-// the secret comes back. PKCE (S256, the only challenge method advertised) is the
-// actual protection, exactly as it already was for a public client -- this is a
-// field in a response, not a credential, and it makes the flow no weaker than it
-// is today.
-//
-// ponytail: theatre for one broken client. Delete it once ChatGPT either honours
-// 'none' or moves to Client ID Metadata Documents, which is where the 2026-07-28
-// MCP spec is going anyway.
-const withPlaceholderClientSecret = (body: unknown, statusCode: number): unknown => {
-  const registration = (body ?? {}) as Record<string, unknown>;
-  if (statusCode !== 201 || !registration.client_id || registration.client_secret) {
-    return body;
-  }
-  return {
-    ...registration,
-    client_secret: randomBytes(32).toString('hex'),
-    // RFC 7591 s3.2.1 requires this whenever a secret is issued. 0 means it never
-    // expires, which is honest: nothing ever checks it.
-    client_secret_expires_at: 0,
-  };
-};
 
 export interface LarkOAuthClientConfig {
   port: number;
@@ -188,16 +157,30 @@ export class LarkAuthHandler {
       }
       const json = res.json.bind(res);
       res.json = (body: unknown) => {
-        const registration = withPlaceholderClientSecret(body, res.statusCode);
-        const { client_secret, ...rest } = registration as Record<string, unknown>;
+        const { client_secret, ...rest } = (body ?? {}) as Record<string, unknown>;
         logger.info(
           `[LarkAuthHandler] register: response ${res.statusCode} ` +
             `${JSON.stringify(rest)}${client_secret ? ' (+client_secret, redacted)' : ''}`,
         );
-        return json(registration);
+        return json(body);
       };
       next();
     });
+
+    // A client picks its registration mechanism from this document, in the order
+    // the spec gives: pre-registration, then Client ID Metadata Documents if the
+    // server says it supports them, then dynamic registration. Without this flag
+    // ChatGPT has only /register to fall back to, and that is the path it dies
+    // on. The SDK does not know about the field, so the route is served ahead of
+    // its own. /register stays for the clients already using it.
+    this.app.use(
+      '/.well-known/oauth-authorization-server',
+      metadataHandler({
+        ...createOAuthMetadata({ provider: this.provider, issuerUrl, scopesSupported }),
+        token_endpoint_auth_methods_supported: SUPPORTED_CLIENT_AUTH_METHODS,
+        client_id_metadata_document_supported: true,
+      } as Parameters<typeof metadataHandler>[0]),
+    );
 
     this.app.use(
       mcpAuthRouter({
