@@ -33,9 +33,13 @@ FROM node:20-bookworm-slim AS runtime
 # TRUST_PROXY: this image is meant to run behind a TLS terminator, where the
 # client IP only exists in X-Forwarded-For. Off by default in the code so a
 # proxy-less `npx` run cannot be IP-spoofed.
+# LOG_LEVEL: the default WARN hides every OAuth and request breadcrumb, which
+# makes a client that never gets past discovery indistinguishable from no client
+# at all. info is the useful floor for something running unattended.
 ENV NODE_ENV=production \
     XDG_DATA_HOME=/data \
-    TRUST_PROXY=1
+    TRUST_PROXY=1 \
+    LOG_LEVEL=info
 
 WORKDIR /app
 
