@@ -13,6 +13,7 @@ const READ_ONLY_NON_GET: ReadonlySet<string> = new Set([
   // Lark models these as POST because the query goes in the body, but none of
   // them modify anything -- `search.v2.message.create` "creates" a search.
   'docx.builtin.search',
+  'im.builtin.messageSearch',
   'search.v2.message.create',
   'wiki.v1.node.search',
   'drive.v1.meta.batchQuery',

@@ -26,6 +26,10 @@ import { McpTool } from '../types';
 // the deployment rather than assumed -- if one turns out to be wrong the tool
 // surfaces a Lark permission error instead of going missing, which is the
 // failure we can actually see.
+// Verified against a live tenant on 2026-08-30: message.list returned a chat's
+// history and message.get returned a DM body, both on a user token, both
+// documented tenant-only. The remaining three follow the same CLI documentation
+// but are writes, so they were not fired at a real chat to find out.
 const USER_CAPABLE: ReadonlySet<string> = new Set([
   'im.v1.message.list',
   'im.v1.message.get',

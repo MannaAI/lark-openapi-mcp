@@ -26,6 +26,12 @@ export const OAPI_MCP_ENV_ARGS = cleanEnvArgs({
   tokenMode: process.env.LARK_TOKEN_MODE,
   tools: process.env.LARK_TOOLS,
   domain: process.env.LARK_DOMAIN,
+  // Selects the v2 authorization flow. With no scope configured the server falls
+  // back to LarkOIDC2OAuthServerProvider, whose authen/v1 tokens are refused by
+  // the newer IM endpoints with 99991695 "user authorization API is a legacy
+  // version" -- so on a deployment this is what makes reading messages possible
+  // at all, not just what gets advertised in the metadata.
+  scope: process.env.LARK_OAUTH_SCOPES,
 });
 
 export enum OAPI_MCP_ERROR_CODE {

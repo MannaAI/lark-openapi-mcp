@@ -50,7 +50,7 @@ to memory -- tokens then survive until the next restart and no further.
 | `LARK_TOKEN_MODE` | `user_access_token` | |
 | `LARK_TOOLS` | `search.v2.message.create,docx.builtin.search,docx.v1.document.rawContent` | Read-only search + document retrieval. |
 | `TRUST_PROXY` | `1` | Already set in the image. Without it the SDK's auth router rate-limits every user under the proxy's single IP. |
-| `LARK_OAUTH_SCOPES` | `docx:document drive:drive wiki:wiki search:message im:chat:readonly im:chat.members:read` | Optional. Advertised as `scopes_supported` so a client can show the user what it is asking for. Match the scopes granted to the Lark app. |
+| `LARK_OAUTH_SCOPES` | `docx:document drive:drive wiki:wiki search:message im:chat:readonly im:chat.members:read im:message:readonly im:message.p2p_msg:get_as_user` | **Required for the IM tools.** See below. |
 
 **Do not set `USER_ACCESS_TOKEN`.** The transport only starts the OAuth flow when
 no static token is configured (`src/mcp-server/transport/streamable.ts`), so
@@ -123,6 +123,29 @@ docker run --rm -p 3000:3000 \
   -e LARK_MCP_ENCRYPTION_KEY=$(openssl rand -hex 32) \
   lark-mcp
 ```
+
+## Reading messages
+
+`LARK_OAUTH_SCOPES` is not cosmetic. Leaving it unset makes `LarkAuthHandler`
+select `LarkOIDC2OAuthServerProvider`, the legacy `authen/v1` flow, and the newer
+IM endpoints reject the tokens it mints:
+
+    99991695 The current user authorization API is a legacy version and does not
+             support this capability.
+
+Setting it selects `LarkOAuth2OAuthServerProvider` and its `authen/v2` flow,
+which is what makes reading messages possible at all. Anyone who authorized
+before it was set must reconnect -- their existing token was minted by the old
+flow and cannot be upgraded.
+
+Direct messages need `im:message.p2p_msg:get_as_user` on top of
+`im:message:readonly`; without it Lark answers `230027` and names the scope.
+
+`im.v1.chat.list`, `.search` and `.get` additionally require the **Bot**
+capability on the Lark app -- they answer `232025 Bot ability is not activated`
+without it, even on a user token. `im.builtin.messageSearch` and
+`im.v1.chatMembers.get` do not, so message search works without ever enabling a
+bot.
 
 ## Read-only vs write tools
 

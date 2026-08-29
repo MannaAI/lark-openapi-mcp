@@ -1,8 +1,9 @@
 import { McpTool } from '../../../../types';
 import { z } from 'zod';
+import { larkImBuiltinMessageSearchTool } from '../../../en/builtin-tools/im/message-search';
 
 // 工具名称类型
-export type imBuiltinToolName = 'im.builtin.batchSend';
+export type imBuiltinToolName = 'im.builtin.batchSend' | 'im.builtin.messageSearch';
 
 export const larkImBuiltinBatchSendTool: McpTool = {
   project: 'im',
@@ -67,4 +68,4 @@ export const larkImBuiltinBatchSendTool: McpTool = {
   },
 };
 
-export const imBuiltinTools = [larkImBuiltinBatchSendTool];
+export const imBuiltinTools = [larkImBuiltinBatchSendTool, larkImBuiltinMessageSearchTool];
