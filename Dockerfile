@@ -30,16 +30,25 @@ FROM node:20-bookworm-slim AS runtime
 # env-paths resolves the token store to $XDG_DATA_HOME/lark-mcp-nodejs. Pinning
 # XDG_DATA_HOME makes the volume mount path explicit -- note the `-nodejs`
 # suffix, which the upstream image's documented mount path omitted.
+# TRUST_PROXY: this image is meant to run behind a TLS terminator, where the
+# client IP only exists in X-Forwarded-For. Off by default in the code so a
+# proxy-less `npx` run cannot be IP-spoofed.
 ENV NODE_ENV=production \
-    XDG_DATA_HOME=/data
+    XDG_DATA_HOME=/data \
+    TRUST_PROXY=1
 
 WORKDIR /app
 
 # As PID 1 a process gets no default signal dispositions, so plain `node` ignores
 # SIGTERM and every redeploy waits out the grace period and SIGKILLs mid-write.
 # tini forwards it, and node then exits on the default disposition.
+# tini: as PID 1 a process gets no default signal dispositions, so plain `node`
+# ignores SIGTERM and every redeploy waits out the grace period and SIGKILLs
+# mid-write. tini forwards it, and node then exits on the default disposition.
+# gosu: the entrypoint has to start as root to chown the mounted volume, then
+# drop to `node` -- see docker-entrypoint.sh.
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends tini \
+  && apt-get install -y --no-install-recommends tini gosu \
   && rm -rf /var/lib/apt/lists/*
 
 COPY package.json yarn.lock ./
@@ -48,17 +57,18 @@ RUN yarn install --frozen-lockfile --production --ignore-scripts \
 
 COPY --from=build /app/dist ./dist
 
-RUN mkdir -p /data/lark-mcp-nodejs && chown -R node:node /data
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
-USER node
-
+# Deliberately no `USER node`: the entrypoint needs root to chown the volume that
+# gets mounted over /data, and drops to `node` itself before exec'ing the server.
 EXPOSE 3000
 
 # Everything else the server needs is already env-driven: APP_ID, APP_SECRET,
 # LARK_TOOLS, LARK_DOMAIN, LARK_TOKEN_MODE, plus PUBLIC_BASE_URL and
 # LARK_MCP_ENCRYPTION_KEY. Run one-off CLI commands by overriding the whole
 # command, e.g. `docker run --rm image node dist/cli.js whoami`.
-ENTRYPOINT ["/usr/bin/tini", "--"]
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/docker-entrypoint.sh"]
 
 # Shell form so $PORT interpolates; `exec` so node replaces the shell rather than
 # sitting under it as a child tini cannot signal.
