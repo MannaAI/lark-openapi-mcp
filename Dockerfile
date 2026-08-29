@@ -1,123 +1,65 @@
 # syntax=docker/dockerfile:1
 
-FROM node:20-bookworm-slim
+# Builds this repo from source. The upstream image installed the published
+# @larksuiteoapi/lark-mcp off npm instead, which in a fork silently ships
+# upstream and none of the local changes.
+#
+# Upstream also ran gnome-keyring + dbus in the container so keytar could hold
+# the token-store encryption key. That is gone: its entrypoint rewrote the
+# keyring on every boot, so the key changed each start and the storage.json from
+# the previous boot could no longer be decrypted -- every restart logged every
+# user out, volume or not. Set LARK_MCP_ENCRYPTION_KEY instead (32 bytes hex,
+# `openssl rand -hex 32`) and the store actually survives a redeploy.
 
+FROM node:20-bookworm-slim AS build
+
+WORKDIR /app
+
+COPY package.json yarn.lock ./
+# --ignore-scripts skips `prepare` (which would run the build before the sources
+# are copied) and keytar's native prebuild, which wants libsecret we do not ship.
+RUN yarn install --frozen-lockfile --ignore-scripts
+
+COPY tsconfig.json ./
+COPY src ./src
+RUN yarn build
+
+
+FROM node:20-bookworm-slim AS runtime
+
+# env-paths resolves the token store to $XDG_DATA_HOME/lark-mcp-nodejs. Pinning
+# XDG_DATA_HOME makes the volume mount path explicit -- note the `-nodejs`
+# suffix, which the upstream image's documented mount path omitted.
 ENV NODE_ENV=production \
-    # Runtime directory required by gnome-keyring/DBus
-    XDG_RUNTIME_DIR=/home/node/.xdg/runtime
+    XDG_DATA_HOME=/data
 
-# Runtime deps: libsecret + gnome-keyring + dbus (provides org.freedesktop.secrets) + build deps for keytar
+WORKDIR /app
+
+# As PID 1 a process gets no default signal dispositions, so plain `node` ignores
+# SIGTERM and every redeploy waits out the grace period and SIGKILLs mid-write.
+# tini forwards it, and node then exits on the default disposition.
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends \
-    libsecret-1-0 \
-    libsecret-tools \
-    libglib2.0-bin \
-    gnome-keyring \
-    dbus \
-    dbus-x11 \
-    ca-certificates \
-    # build deps (in case keytar needs to compile)
-    python3 \
-    make \
-    g++ \
-    pkg-config \
-    libsecret-1-dev \
+  && apt-get install -y --no-install-recommends tini \
   && rm -rf /var/lib/apt/lists/*
 
-## Install lark-mcp globally (will install keytar as dependency)
-RUN npm install -g @larksuiteoapi/lark-mcp@latest \
-  && npm cache clean --force
+COPY package.json yarn.lock ./
+RUN yarn install --frozen-lockfile --production --ignore-scripts \
+  && yarn cache clean
 
-## Prepare XDG and user-writable dirs before dropping privileges
-RUN mkdir -p ${XDG_RUNTIME_DIR} \
-  && mkdir -p /home/node/.local/state /home/node/.local/share/lark-mcp \
-  && chown -R node:node ${XDG_RUNTIME_DIR} /home/node/.local
+COPY --from=build /app/dist ./dist
 
-## Dev dependencies were pruned in the build stage; no need to prune again here
-
-# Initialize DBus and gnome-keyring (secrets) so keytar can operate
-RUN <<'EOF'
-cat >/usr/local/bin/docker-entrypoint.sh <<'SCRIPT'
-#!/usr/bin/env bash
-set -e
-
-# Prepare DBus session; address uses XDG_RUNTIME_DIR
-if [[ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ]]; then
-  mkdir -p "${XDG_RUNTIME_DIR}"
-  dbus-daemon --session --address="unix:path=${XDG_RUNTIME_DIR}/bus" --fork
-  export DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR}/bus"
-fi
-
-# Create required directories with correct permissions
-mkdir -p "${XDG_RUNTIME_DIR}/keyring"
-mkdir -p "${HOME}/.local/share/keyrings"
-chmod 0700 "${XDG_RUNTIME_DIR}/keyring"
-chmod 0700 "${HOME}/.local/share/keyrings"
-
-# Start gnome-keyring daemon properly
-if command -v gnome-keyring-daemon >/dev/null 2>&1; then
-  # Kill any existing keyring processes
-  pkill -f gnome-keyring 2>/dev/null || true
-  sleep 0.5
-  
-  # Create an initial login keyring file
-  current_ts="$(date +%s)"
-  cat > "${HOME}/.local/share/keyrings/login.keyring" <<KEYRING_EOF
-[keyring]
-display-name=Login
-ctime=${current_ts}
-mtime=${current_ts}
-lock-on-idle=false
-lock-after=false
-KEYRING_EOF
-  chmod 0600 "${HOME}/.local/share/keyrings/login.keyring"
-  
-  # Start gnome-keyring daemon with control directory (suppress stderr warnings)
-  eval $(gnome-keyring-daemon --start --daemonize --components=secrets --control-directory="${XDG_RUNTIME_DIR}/keyring" 2>/dev/null)
-  
-  # Wait for the daemon to be available and control socket to exist
-  for i in {1..50}; do
-    if [[ -S "${XDG_RUNTIME_DIR}/keyring/control" ]] && gdbus introspect --session --dest org.freedesktop.secrets --object-path /org/freedesktop/secrets >/dev/null 2>&1; then
-      break
-    fi
-    sleep 0.1
-  done
-  
-  # Export control directory for the session
-  export GNOME_KEYRING_CONTROL="${XDG_RUNTIME_DIR}/keyring"
-  
-  # Create login collection via D-Bus
-  if gdbus introspect --session --dest org.freedesktop.secrets --object-path /org/freedesktop/secrets >/dev/null 2>&1; then
-    # Try to create login collection
-    printf "" | gdbus call --session \
-      --dest org.freedesktop.secrets \
-      --object-path /org/freedesktop/secrets \
-      --method org.freedesktop.secrets.Service.CreateCollection \
-      "{'org.freedesktop.Secret.Collection.Label': <'login'>}" \
-      "login" >/dev/null 2>&1 || true
-    
-    # Set login as the default alias
-    gdbus call --session \
-      --dest org.freedesktop.secrets \
-      --object-path /org/freedesktop/secrets \
-      --method org.freedesktop.secrets.Service.SetAlias \
-      "login" "/org/freedesktop/secrets/collection/login" >/dev/null 2>&1 || true
-  fi
-fi
-
-# Suppress gnome-keyring warnings by redirecting stderr for the main process
-exec "$@" 2> >(grep -v "couldn't access control socket\|discover_other_daemon" >&2)
-SCRIPT
-chmod +x /usr/local/bin/docker-entrypoint.sh
-EOF
+RUN mkdir -p /data/lark-mcp-nodejs && chown -R node:node /data
 
 USER node
 
 EXPOSE 3000
 
-ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh", "lark-mcp"]
+# Everything else the server needs is already env-driven: APP_ID, APP_SECRET,
+# LARK_TOOLS, LARK_DOMAIN, LARK_TOKEN_MODE, plus PUBLIC_BASE_URL and
+# LARK_MCP_ENCRYPTION_KEY. Run one-off CLI commands by overriding the whole
+# command, e.g. `docker run --rm image node dist/cli.js whoami`.
+ENTRYPOINT ["/usr/bin/tini", "--"]
 
-# Show help by default; override CMD to pass CLI arguments
-CMD ["--help"]
-
-
+# Shell form so $PORT interpolates; `exec` so node replaces the shell rather than
+# sitting under it as a child tini cannot signal.
+CMD exec node dist/cli.js mcp --mode streamable --host 0.0.0.0 --port ${PORT:-3000} --oauth
