@@ -124,6 +124,18 @@ docker run --rm -p 3000:3000 \
   lark-mcp
 ```
 
+## Read-only vs write tools
+
+Tools are registered with MCP's `readOnlyHint` annotation, inferred from `GET`
+plus a named list of read-only `POST` endpoints in
+`src/mcp-tool/utils/is-read-only.ts`. A client that sees no hint treats a tool as
+a write, which in ChatGPT means a per-call confirmation and, on some workspace
+plans, being blocked outright -- so an unannotated read-only server can appear to
+have no usable actions at all.
+
+The list is opt-in for a reason: labelling a write as read-only lets a client
+call it without asking. Anything not `GET` and not named there stays a write.
+
 ## Constraints
 
 **Single replica.** `railway.toml` pins `numReplicas = 1`. `AuthStore` keeps
