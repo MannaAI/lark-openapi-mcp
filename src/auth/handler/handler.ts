@@ -167,19 +167,43 @@ export class LarkAuthHandler {
       next();
     });
 
-    // A client picks its registration mechanism from this document, in the order
-    // the spec gives: pre-registration, then Client ID Metadata Documents if the
-    // server says it supports them, then dynamic registration. Without this flag
-    // ChatGPT has only /register to fall back to, and that is the path it dies
-    // on. The SDK does not know about the field, so the route is served ahead of
-    // its own. /register stays for the clients already using it.
+    // The SDK publishes `issuer` as URL.href, which for a bare origin is
+    // `https://host/`. RFC 8414 s3.3 says the value MUST be identical to the
+    // issuer identifier the well-known path was inserted into, and that
+    // identifier is `https://host` -- no trailing slash. A client that checks it
+    // sees a mismatch and discards the whole document, which looks from here like
+    // it read the metadata fine and then lost interest. Measured against three
+    // remote MCP servers ChatGPT does connect to (Linear, Sentry, Notion): all
+    // three publish the slash-free form, and this server was the only one that
+    // did not.
+    const oauthMetadata = {
+      ...createOAuthMetadata({ provider: this.provider, issuerUrl, scopesSupported }),
+      issuer: this.issuerUrl,
+      token_endpoint_auth_methods_supported: SUPPORTED_CLIENT_AUTH_METHODS,
+      // Also present on all three, absent here. RFC 8414 lets a client assume the
+      // default when it is missing, but only a client that bothers to.
+      response_modes_supported: ['query'],
+      // A client picks its registration mechanism from this document, in the
+      // order the spec gives: pre-registration, then Client ID Metadata Documents
+      // if the server says it supports them, then dynamic registration. Without
+      // this flag ChatGPT has only /register to fall back to.
+      client_id_metadata_document_supported: true,
+    } as Parameters<typeof metadataHandler>[0];
+
+    const protectedResourceMetadata = {
+      resource: this.resourceUrl,
+      authorization_servers: [this.issuerUrl],
+      scopes_supported: scopesSupported,
+      bearer_methods_supported: ['header'],
+    };
+
+    // Both documents are served ahead of the SDK's own router, which would
+    // otherwise answer with the trailing-slash issuer. The router still owns
+    // /authorize, /token and /register.
+    this.app.use('/.well-known/oauth-authorization-server', metadataHandler(oauthMetadata));
     this.app.use(
-      '/.well-known/oauth-authorization-server',
-      metadataHandler({
-        ...createOAuthMetadata({ provider: this.provider, issuerUrl, scopesSupported }),
-        token_endpoint_auth_methods_supported: SUPPORTED_CLIENT_AUTH_METHODS,
-        client_id_metadata_document_supported: true,
-      } as Parameters<typeof metadataHandler>[0]),
+      `/.well-known/oauth-protected-resource${new URL(this.resourceUrl).pathname}`,
+      metadataHandler(protectedResourceMetadata),
     );
 
     this.app.use(
@@ -199,14 +223,7 @@ export class LarkAuthHandler {
     // Clients that connected before the path-inserted document existed still ask
     // here. Mounted after the router, because as a prefix of the path-inserted
     // path it would otherwise shadow it.
-    this.app.use(
-      '/.well-known/oauth-protected-resource',
-      metadataHandler({
-        resource: this.resourceUrl,
-        authorization_servers: [issuerUrl.href],
-        scopes_supported: scopesSupported,
-      }),
-    );
+    this.app.use('/.well-known/oauth-protected-resource', metadataHandler(protectedResourceMetadata));
 
     this.app.get('/callback', (req, res) => this.callback(req, res));
   };

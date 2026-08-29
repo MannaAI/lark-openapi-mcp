@@ -31,12 +31,16 @@ export const initStreamableServer: InitTransportServerFunction = (
 
   // Nothing else logs per request, so a remote client that never gets past
   // discovery or auth leaves no trace at all and the server reads as idle rather
-  // than as rejecting something. Method, path and status only -- never the token.
+  // than as rejecting something. Method, path, status and User-Agent only --
+  // never the token. The agent string is what tells two clients apart: without
+  // it, a discovery sequence that stops halfway cannot be attributed to the
+  // client that abandoned it, which is exactly the case worth reading.
   app.use((req: Request, res: Response, next: NextFunction) => {
     res.on('finish', () => {
       logger.info(
         `[http] ${req.method} ${req.originalUrl} -> ${res.statusCode}` +
-          `${req.headers.authorization ? ' (bearer)' : ''}`,
+          `${req.headers.authorization ? ' (bearer)' : ''}` +
+          ` ua=${JSON.stringify(req.headers['user-agent'] ?? '')}`,
       );
     });
     next();

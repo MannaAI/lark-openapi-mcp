@@ -73,10 +73,17 @@ describe('OAuth discovery metadata', () => {
     expect(metadata.scopes_supported).toEqual(['docx:document', 'im:message:readonly']);
   });
 
+  // RFC 8414 s3.3: identical to the issuer identifier the well-known path was
+  // inserted into. The SDK publishes URL.href, which appends a slash to a bare
+  // origin and fails that comparison for a client that makes it.
+  it('publishes an issuer with no trailing slash', async () => {
+    expect((await read('/.well-known/oauth-authorization-server')).issuer).toBe(BASE);
+  });
+
   it('names /mcp as the protected resource, at both well-known paths', async () => {
     const expected = {
       resource: `${BASE}/mcp`,
-      authorization_servers: [`${BASE}/`],
+      authorization_servers: [BASE],
       scopes_supported: ['docx:document', 'im:message:readonly'],
     };
 
