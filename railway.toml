@@ -1,0 +1,12 @@
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+restartPolicyType = "ON_FAILURE"
+
+# The OAuth token store is a single encrypted file on disk, so a user who
+# authorizes against one replica gets a 401 from any other. Scaling out needs a
+# shared store (Redis/Postgres) behind AuthStore first -- see
+# docs/usage/deploy/railway.md.
+numReplicas = 1

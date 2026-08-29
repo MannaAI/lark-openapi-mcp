@@ -1,0 +1,31 @@
+name: Deploy
+
+# Pushes the repo to Railway, which builds the root Dockerfile. Config lives in
+# the Railway service (env vars, volume, domain), not here -- see
+# docs/usage/deploy/railway.md for what has to be set before the first deploy.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "package.json"
+      - "yarn.lock"
+      - "tsconfig.json"
+      - "Dockerfile"
+      - "railway.toml"
+      - ".github/workflows/deploy.yml"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    container: ghcr.io/railwayapp/cli:5.3.1
+    env:
+      RAILWAY_API_TOKEN: ${{ secrets.RAILWAY_API_TOKEN }}
+      RAILWAY_PROJECT_ID: ${{ secrets.RAILWAY_PROJECT_ID }}
+      RAILWAY_ENVIRONMENT_ID: ${{ secrets.RAILWAY_ENVIRONMENT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: railway up --service=${{ secrets.RAILWAY_SERVICE_ID }}

@@ -297,4 +297,42 @@ describe('StorageManager', () => {
       consoleSpy.mockRestore();
     });
   });
+  describe('LARK_MCP_ENCRYPTION_KEY', () => {
+    const validKey = 'a'.repeat(AUTH_CONFIG.ENCRYPTION.KEY_LENGTH * 2);
+
+    afterEach(() => {
+      delete process.env.LARK_MCP_ENCRYPTION_KEY;
+    });
+
+    it('should use the env key and never touch the OS keyring', async () => {
+      process.env.LARK_MCP_ENCRYPTION_KEY = validKey;
+      MockEncryptionUtil.mockClear();
+      mockKeytar.getPassword.mockClear();
+      mockKeytar.setPassword.mockClear();
+
+      const manager = new StorageManager();
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      expect(MockEncryptionUtil).toHaveBeenCalledWith(validKey);
+      expect(mockKeytar.getPassword).not.toHaveBeenCalled();
+      expect(mockKeytar.setPassword).not.toHaveBeenCalled();
+
+      manager.encrypt('data');
+      expect(mockEncryptInstance.encrypt).toHaveBeenCalledWith('data');
+    });
+
+    it('should disable the store rather than encrypt under a malformed key', async () => {
+      process.env.LARK_MCP_ENCRYPTION_KEY = 'too-short';
+      MockEncryptionUtil.mockClear();
+      const consoleSpy = jest.spyOn(console, 'error').mockImplementation();
+
+      const manager = new StorageManager();
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      expect(MockEncryptionUtil).not.toHaveBeenCalled();
+      expect(() => manager.encrypt('data')).toThrow('StorageManager not initialized');
+
+      consoleSpy.mockRestore();
+    });
+  });
 });

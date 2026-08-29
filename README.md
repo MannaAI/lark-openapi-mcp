@@ -12,6 +12,12 @@ English | [中文](./README_ZH.md)
 
 [Trouble Shooting](https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/mcp_integration/use_cases)
 
+> **This is a fork.** It adds remote OAuth support so the server can run behind a
+> public HTTPS domain and let each user authorize with their own Lark identity,
+> rather than only on localhost. Two new environment variables carry it:
+> `PUBLIC_BASE_URL` and `LARK_MCP_ENCRYPTION_KEY`. See
+> [Deploying to Railway](./docs/usage/deploy/railway.md).
+
 > **⚠️ Beta Version Notice**: This tool is currently in Beta stage. Features and APIs may change, so please stay updated with version releases.
 
 This is the Feishu/Lark official OpenAPI MCP (Model Context Protocol) tool designed to help users quickly connect to the Feishu/Lark platform and enable efficient collaboration between AI Agents and Feishu/Lark. The tool encapsulates Feishu/Lark Open Platform API interfaces as MCP tools, allowing AI assistants to directly call these interfaces and implement various automation scenarios such as document processing, conversation management, calendar scheduling, and more.
