@@ -1,5 +1,5 @@
 import express from 'express';
-import { initStreamableServer } from '../../src/mcp-server/transport/streamable';
+import { initStreamableServer, isDiscoveryOnly } from '../../src/mcp-server/transport/streamable';
 import { McpServerOptions } from '../../src/mcp-server/shared/types';
 import { parseMCPServerOptionsFromRequest, sendJsonRpcError } from '../../src/mcp-server/transport/utils';
 import { LarkAuthHandler } from '../../src/auth';
@@ -503,7 +503,9 @@ describe('initStreamableServer', () => {
     initStreamableServer(getMockServer, options);
 
     // 验证错误被记录并且进程退出
-    expect(console.error).toHaveBeenCalledWith('[ERROR] [StreamableServerTransport] Server error: Error: Port already in use');
+    expect(console.error).toHaveBeenCalledWith(
+      '[ERROR] [StreamableServerTransport] Server error: Error: Port already in use',
+    );
     expect(process.exit).toHaveBeenCalledWith(1);
   });
 
@@ -694,5 +696,28 @@ describe('initStreamableServer', () => {
       const authHandlerInstance = (LarkAuthHandler as jest.Mock).mock.results[0].value;
       expect(authHandlerInstance.authenticateRequest).toHaveBeenCalledWith(mockReq, mockRes, mockNext);
     });
+  });
+});
+
+// ChatGPT scans a connector's tools with no token and reports "no actions found"
+// on a 401, so the handshake and the catalogue have to answer unauthenticated --
+// but nothing that reaches Lark may.
+describe('isDiscoveryOnly', () => {
+  it('lets the handshake and the tool listing through', () => {
+    expect(isDiscoveryOnly({ method: 'initialize' })).toBe(true);
+    expect(isDiscoveryOnly({ method: 'tools/list' })).toBe(true);
+    expect(isDiscoveryOnly({ method: 'notifications/initialized' })).toBe(true);
+    expect(isDiscoveryOnly({ method: 'ping' })).toBe(true);
+    expect(isDiscoveryOnly([{ method: 'initialize' }, { method: 'tools/list' }])).toBe(true);
+  });
+
+  it('holds the line at anything that reaches Lark', () => {
+    expect(isDiscoveryOnly({ method: 'tools/call' })).toBe(false);
+    expect(isDiscoveryOnly({ method: 'resources/read' })).toBe(false);
+    // One protected call in a batch is enough to require a token for the batch.
+    expect(isDiscoveryOnly([{ method: 'tools/list' }, { method: 'tools/call' }])).toBe(false);
+    expect(isDiscoveryOnly([])).toBe(false);
+    expect(isDiscoveryOnly(undefined)).toBe(false);
+    expect(isDiscoveryOnly({})).toBe(false);
   });
 });
