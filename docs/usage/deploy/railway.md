@@ -87,11 +87,18 @@ Point the MCP client at `https://<your-domain>/mcp`. Discovery is served from
 A 401 also carries `WWW-Authenticate: Bearer ..., resource_metadata="..."` for
 clients that discover auth from the challenge rather than by probing.
 
-`token_endpoint_auth_methods_supported` includes `none`, because `/register`
-hands out public clients with no `client_secret`. A client that reads the
-metadata strictly and finds only `client_secret_post` there concludes it can
-never complete the token exchange, and abandons the flow after registering --
+`token_endpoint_auth_methods_supported` lists the two methods the token endpoint
+can actually verify, and `/register` will not hand back anything else: a client
+that omits `token_endpoint_auth_method`, or asks for one of the methods that
+reads credentials from the `Authorization` header, is registered as a public
+client instead. Otherwise it leaves holding a `client_secret` that nothing here
+accepts -- and a client that compares its registration against the metadata
+before authorizing, as ChatGPT does, abandons the flow the moment it registers,
 without ever opening the authorize URL, so no login prompt appears at all.
+
+`/register` logs the requested auth method, redirect URIs, grant types and
+scope, which is the only visibility there is into a client that gives up
+silently.
 
 **Scopes.** With `LARK_OAUTH_SCOPES` unset nothing is advertised, and a client
 that offers to request scopes has an empty list to choose from -- ChatGPT says

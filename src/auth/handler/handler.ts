@@ -8,6 +8,11 @@ import { advertisedScopes } from '../config';
 import { generatePKCEPair } from '../utils/pkce';
 import { logger } from '../../utils/logger';
 
+// Everything the token endpoint can actually verify. client_secret_basic is
+// absent on purpose: the SDK's client authentication reads client_id and
+// client_secret out of the request body only.
+const SUPPORTED_CLIENT_AUTH_METHODS = ['client_secret_post', 'none'];
+
 export interface LarkOAuthClientConfig {
   port: number;
   host: string;
@@ -141,13 +146,40 @@ export class LarkAuthHandler {
     //   (RFC 9728 s3.1) that an MCP 2025-06-18 client looks for first.
     const oauthMetadata = {
       ...createOAuthMetadata({ provider: this.provider, issuerUrl, scopesSupported }),
-      token_endpoint_auth_methods_supported: ['client_secret_post', 'none'],
+      token_endpoint_auth_methods_supported: SUPPORTED_CLIENT_AUTH_METHODS,
     };
     const protectedResourceMetadata = {
       resource: this.resourceUrl,
       authorization_servers: [oauthMetadata.issuer],
       scopes_supported: scopesSupported,
     };
+
+    // The SDK's registration handler treats a client as public only when it asks
+    // for token_endpoint_auth_method: 'none'. Omit the field -- RFC 7591 then
+    // defaults it to client_secret_basic -- and it mints a client_secret instead.
+    // Nothing here can honour that: the token endpoint reads credentials from the
+    // request body, never the Authorization header, and the metadata above
+    // advertises no such method. So the client walks away holding a secret it can
+    // never spend, and one that checks the metadata before authorizing gives up
+    // the moment it registers, without saying why. Register anything we cannot
+    // actually accept as a public client instead; PKCE is what protects it.
+    this.app.use('/register', (req: Request, _res: Response, next: NextFunction) => {
+      if (req.method !== 'POST' || !req.body) {
+        return next();
+      }
+      const requested = req.body.token_endpoint_auth_method;
+      logger.info(
+        `[LarkAuthHandler] register: client_name=${req.body.client_name} ` +
+          `token_endpoint_auth_method=${requested ?? '(unset)'} ` +
+          `redirect_uris=${JSON.stringify(req.body.redirect_uris)} ` +
+          `grant_types=${JSON.stringify(req.body.grant_types)} scope=${JSON.stringify(req.body.scope)}`,
+      );
+      if (!SUPPORTED_CLIENT_AUTH_METHODS.includes(requested)) {
+        req.body.token_endpoint_auth_method = 'none';
+        logger.info(`[LarkAuthHandler] register: registering as a public client instead`);
+      }
+      next();
+    });
 
     this.app.use('/.well-known/oauth-authorization-server', metadataHandler(oauthMetadata));
     // Both spellings: the path-inserted one for clients that follow the current

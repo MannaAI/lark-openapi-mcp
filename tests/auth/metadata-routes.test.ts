@@ -68,6 +68,43 @@ describe('OAuth discovery metadata', () => {
     expect(read('/.well-known/oauth-protected-resource')).toEqual(expected);
   });
 
+  // A client that is handed a client_secret it cannot spend has no way to say so
+  // -- it just stops -- so the registration has to come back in a shape the token
+  // endpoint will actually accept.
+  describe('client registration', () => {
+    const register = (body: Record<string, unknown>) => {
+      const entry = mounted.find((m) => m.path === '/register');
+      expect(entry).toBeDefined();
+      const req = { method: 'POST', body } as unknown as Request;
+      (entry!.handler as any)(req, {} as Response, () => undefined);
+      return req.body as Record<string, unknown>;
+    };
+
+    it('registers a client that omits the auth method as public', () => {
+      // RFC 7591 defaults the omitted field to client_secret_basic, which the
+      // token endpoint cannot verify and the metadata does not advertise.
+      expect(register({ client_name: 'omitted' }).token_endpoint_auth_method).toBe('none');
+    });
+
+    it('registers a client asking for an unsupported method as public', () => {
+      expect(register({ token_endpoint_auth_method: 'client_secret_basic' }).token_endpoint_auth_method).toBe('none');
+    });
+
+    it('leaves a supported method alone', () => {
+      expect(register({ token_endpoint_auth_method: 'client_secret_post' }).token_endpoint_auth_method).toBe(
+        'client_secret_post',
+      );
+      expect(register({ token_endpoint_auth_method: 'none' }).token_endpoint_auth_method).toBe('none');
+    });
+
+    it('only registers methods the metadata advertises', () => {
+      const advertised = read('/.well-known/oauth-authorization-server').token_endpoint_auth_methods_supported;
+      for (const requested of ['client_secret_basic', 'private_key_jwt', undefined]) {
+        expect(advertised).toContain(register({ token_endpoint_auth_method: requested }).token_endpoint_auth_method);
+      }
+    });
+  });
+
   it('mounts them ahead of mcpAuthRouter, which serves the same paths', () => {
     const wellKnown = mounted.filter((m) => String(m.path).startsWith('/.well-known/'));
     const sdkRouter = mounted.findIndex((m) => typeof m.path === 'function');
