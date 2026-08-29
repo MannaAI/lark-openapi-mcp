@@ -5,6 +5,18 @@ import { parseMCPServerOptionsFromRequest, sendJsonRpcError } from './utils';
 import { LarkAuthHandler } from '../../auth';
 import { logger } from '../../utils/logger';
 
+// The handshake and the catalogue -- everything a client needs to describe the
+// server without reaching Lark. tools/call is deliberately absent.
+const UNAUTHENTICATED_METHODS = new Set(['initialize', 'notifications/initialized', 'ping', 'tools/list']);
+
+export const isDiscoveryOnly = (body: unknown): boolean => {
+  const messages = Array.isArray(body) ? body : [body];
+  return (
+    messages.length > 0 &&
+    messages.every((message) => UNAUTHENTICATED_METHODS.has((message as { method?: string })?.method ?? ''))
+  );
+};
+
 export const initStreamableServer: InitTransportServerFunction = (
   getNewServer,
   options,
@@ -34,9 +46,12 @@ export const initStreamableServer: InitTransportServerFunction = (
   // than as rejecting something. Method, path and status only -- never the token.
   app.use((req: Request, res: Response, next: NextFunction) => {
     res.on('finish', () => {
+      // The user agent is what separates a client's backend from the browser it
+      // is supposed to send to /authorize, which is the difference between a
+      // client rejecting the server and a user never being shown a sign-in.
       logger.info(
         `[http] ${req.method} ${req.originalUrl} -> ${res.statusCode}` +
-          `${req.headers.authorization ? ' (bearer)' : ''}`,
+          `${req.headers.authorization ? ' (bearer)' : ''} ua=${JSON.stringify(req.headers['user-agent'] ?? '')}`,
       );
     });
     next();
@@ -53,6 +68,20 @@ export const initStreamableServer: InitTransportServerFunction = (
 
   const authMiddleware = (req: Request, res: Response, next: NextFunction) => {
     if (authHandler && oauth) {
+      // ChatGPT scans a connector's tools before it offers the user anything to
+      // sign in to, and it runs that scan with no token. A 401 there reads to it
+      // as a server with nothing to offer -- "no actions found" -- so the OAuth
+      // flow it just prepared goes unused: it discovers, registers, and stops,
+      // without ever opening /authorize. That is exactly the sequence in the
+      // deployed server's logs, across every build so far.
+      //
+      // So answer the handshake and the tool listing unauthenticated. This
+      // publishes tool names, descriptions and schemas to anyone who asks. It
+      // publishes no Lark data: every tools/call still needs a bearer token, and
+      // a user_access_token behind it.
+      if (!req.headers.authorization && isDiscoveryOnly(req.body)) {
+        return next();
+      }
       authHandler.authenticateRequest(req, res, next);
     } else {
       const authToken = req.headers.authorization?.split(' ')[1];
