@@ -50,6 +50,7 @@ to memory -- tokens then survive until the next restart and no further.
 | `LARK_TOKEN_MODE` | `user_access_token` | |
 | `LARK_TOOLS` | `search.v2.message.create,docx.builtin.search,docx.v1.document.rawContent` | Read-only search + document retrieval. |
 | `TRUST_PROXY` | `1` | Already set in the image. Without it the SDK's auth router rate-limits every user under the proxy's single IP. |
+| `LARK_OAUTH_SCOPES` | `docx:document drive:drive wiki:wiki search:message im:chat:readonly im:chat.members:read` | Optional. Advertised as `scopes_supported` so a client can show the user what it is asking for. Match the scopes granted to the Lark app. |
 
 **Do not set `USER_ACCESS_TOKEN`.** The transport only starts the OAuth flow when
 no static token is configured (`src/mcp-server/transport/streamable.ts`), so
@@ -83,6 +84,18 @@ Point the MCP client at `https://<your-domain>/mcp`. Discovery is served from
 
 A 401 also carries `WWW-Authenticate: Bearer ..., resource_metadata="..."` for
 clients that discover auth from the challenge rather than by probing.
+
+**Scopes.** With `LARK_OAUTH_SCOPES` unset nothing is advertised, and a client
+that offers to request scopes has an empty list to choose from -- ChatGPT says
+so in as many words. Setting it advertises the list and also becomes the default
+scope recorded for a client that registers without one, which matters because
+`/authorize` rejects any scope the client was not registered with and bounces
+the error to the client's own redirect URI, where it is invisible from here.
+
+Advertised scopes are discovery metadata, not enforcement: the OIDC provider
+does not forward them to Lark, which grants whatever the app itself was granted.
+Narrow what a token can reach through the Lark console and `LARK_TOOLS`, not
+here.
 
 Verify before wiring up a client:
 

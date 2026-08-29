@@ -3,6 +3,7 @@ import { OAuthClientInformationFull } from '@modelcontextprotocol/sdk/shared/aut
 import { OAuthRegisteredClientsStore } from '@modelcontextprotocol/sdk/server/auth/clients.js';
 import fs from 'fs';
 import { storageManager } from './utils/storage-manager';
+import { advertisedScopes } from './config';
 import { StorageData } from './types';
 import { logger } from '../utils/logger';
 
@@ -204,6 +205,15 @@ export class AuthStore implements OAuthRegisteredClientsStore {
 
   async registerClient(client: OAuthClientInformationFull): Promise<OAuthClientInformationFull> {
     await this.initialize();
+    // /authorize rejects any scope the client was not registered with, and
+    // dynamic registration does not require a client to send one. Without this a
+    // client that registers bare and then asks for a scope is bounced with
+    // invalid_scope -- back to its own redirect_uri, so the user never reaches
+    // Lark and the failure is invisible from here.
+    const scopes = advertisedScopes();
+    if (!client.scope && scopes?.length) {
+      client = { ...client, scope: scopes.join(' ') };
+    }
     this.storageDataCache.clients[client.client_id] = client;
     await this.saveToStorage();
     return client;

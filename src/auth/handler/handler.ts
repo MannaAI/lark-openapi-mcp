@@ -3,6 +3,7 @@ import { requireBearerAuth } from '@modelcontextprotocol/sdk/server/auth/middlew
 import { mcpAuthRouter, getOAuthProtectedResourceMetadataUrl } from '@modelcontextprotocol/sdk/server/auth/router.js';
 import { LarkOIDC2OAuthServerProvider, LarkOAuth2OAuthServerProvider } from '../provider';
 import { authStore } from '../store';
+import { advertisedScopes } from '../config';
 import { generatePKCEPair } from '../utils/pkce';
 import { logger } from '../../utils/logger';
 
@@ -104,7 +105,19 @@ export class LarkAuthHandler {
 
   setupRoutes = (): void => {
     logger.info(`[LarkAuthHandler] setupRoutes: issuerUrl: ${this.issuerUrl}`);
-    this.app.use(mcpAuthRouter({ provider: this.provider, issuerUrl: new URL(this.issuerUrl) }));
+    // A client that finds no scopes_supported has nothing to offer the user to
+    // pick from, and ChatGPT says so outright ("the discovered OAuth config did
+    // not advertise supported scopes"). This is discovery metadata only: the OIDC
+    // provider ignores requested scopes and Lark grants whatever the app itself
+    // was granted, so advertising them changes what a client can display, not
+    // what a token can reach.
+    this.app.use(
+      mcpAuthRouter({
+        provider: this.provider,
+        issuerUrl: new URL(this.issuerUrl),
+        scopesSupported: advertisedScopes(),
+      }),
+    );
     this.app.get('/callback', (req, res) => this.callback(req, res));
   };
 
