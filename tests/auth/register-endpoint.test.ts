@@ -74,7 +74,6 @@ describe('POST /register', () => {
 
     expect(status).toBe(201);
     expect(body.token_endpoint_auth_method).toBe('none');
-    expect(body.client_secret).toBeUndefined();
     expect(body.client_id).toEqual(expect.any(String));
   });
 
@@ -87,7 +86,6 @@ describe('POST /register', () => {
 
     expect(status).toBe(201);
     expect(body.token_endpoint_auth_method).toBe('none');
-    expect(body.client_secret).toBeUndefined();
   });
 
   // What ChatGPT actually sends, verbatim from the deployed server's logs.
@@ -101,8 +99,10 @@ describe('POST /register', () => {
 
     expect(status).toBe(201);
     expect(body.token_endpoint_auth_method).toBe('none');
-    expect(body.client_secret).toBeUndefined();
     expect(body.redirect_uris).toEqual(['https://chatgpt.com/connector/oauth/abc123']);
+    // It asks for 'none' and then discards a registration that honours it.
+    expect(body.client_secret).toEqual(expect.any(String));
+    expect(body.client_secret_expires_at).toBe(0);
     // A client that asked for no scope has nothing to put on the authorize URL,
     // so the store fills in what the metadata advertises.
     expect(body.scope).toBe('docx:document im:message:readonly');
