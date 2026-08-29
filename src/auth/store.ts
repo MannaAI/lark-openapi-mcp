@@ -203,25 +203,37 @@ export class AuthStore implements OAuthRegisteredClientsStore {
     return this.storageDataCache.localTokens || {};
   }
 
+  // /authorize rejects any scope the client was not registered with, and
+  // dynamic registration does not require a client to send one. Without this a
+  // client that registers bare and then asks for a scope is bounced with
+  // invalid_scope -- back to its own redirect_uri, so the user never reaches
+  // Lark and the failure is invisible from here.
+  //
+  // Applied on read as well as on write: a client that registered before any
+  // scope was configured is stored bare forever, and it never re-registers, so
+  // backfilling only at registration leaves it permanently unable to ask for a
+  // scope -- its consent screen and token carry whatever Lark defaults to
+  // rather than what this server advertises.
+  private withDefaultScope(client: OAuthClientInformationFull): OAuthClientInformationFull {
+    const scopes = advertisedScopes();
+    if (client.scope || !scopes?.length) {
+      return client;
+    }
+    return { ...client, scope: scopes.join(' ') };
+  }
+
   async registerClient(client: OAuthClientInformationFull): Promise<OAuthClientInformationFull> {
     await this.initialize();
-    // /authorize rejects any scope the client was not registered with, and
-    // dynamic registration does not require a client to send one. Without this a
-    // client that registers bare and then asks for a scope is bounced with
-    // invalid_scope -- back to its own redirect_uri, so the user never reaches
-    // Lark and the failure is invisible from here.
-    const scopes = advertisedScopes();
-    if (!client.scope && scopes?.length) {
-      client = { ...client, scope: scopes.join(' ') };
-    }
-    this.storageDataCache.clients[client.client_id] = client;
+    const stored = this.withDefaultScope(client);
+    this.storageDataCache.clients[stored.client_id] = stored;
     await this.saveToStorage();
-    return client;
+    return stored;
   }
 
   async getClient(id: string): Promise<OAuthClientInformationFull | undefined> {
     await this.initialize();
-    return this.storageDataCache.clients[id];
+    const client = this.storageDataCache.clients[id];
+    return client && this.withDefaultScope(client);
   }
 
   async removeClient(clientId: string): Promise<void> {

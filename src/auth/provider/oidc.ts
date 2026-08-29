@@ -7,7 +7,7 @@ import { authStore } from '../store';
 import { isTokenValid } from '../utils/is-token-valid';
 import { generateCodeChallenge } from '../utils/pkce';
 import { z } from 'zod';
-import { LarkProxyOAuthServerProviderOptions } from './types';
+import { LarkProxyOAuthServerProviderOptions, OIDC_FLOW } from './types';
 import { commonHttpInstance } from '../../utils/http-instance';
 import { logger } from '../../utils/logger';
 
@@ -140,6 +140,7 @@ export class LarkOIDC2OAuthServerProvider implements OAuthServerProvider {
         scopes: token.data.scope?.split(' ') || [],
         expiresAt,
         extra: {
+          flow: OIDC_FLOW,
           refreshToken: token.data.refresh_token,
           token,
           appId: this._options.appId,
@@ -212,7 +213,7 @@ export class LarkOIDC2OAuthServerProvider implements OAuthServerProvider {
         token: token.data.access_token,
         scopes: token.data.scope?.split(' ') || [],
         expiresAt,
-        extra: { refreshToken: token.data.refresh_token, token, appId, appSecret },
+        extra: { flow: OIDC_FLOW, refreshToken: token.data.refresh_token, token, appId, appSecret },
       });
 
       logger.info(
