@@ -53,7 +53,8 @@ describe('mcp-server/transport/utils', () => {
       expect(result.success).toBe(false);
       expect(result.data).toEqual({});
       expect(result.message).toBeDefined();
-      expect(result.message).toContain('Invalid enum value');
+      // Naming the offending field is the contract; zod's wording is not.
+      expect(result.message).toContain('language');
     });
   });
 

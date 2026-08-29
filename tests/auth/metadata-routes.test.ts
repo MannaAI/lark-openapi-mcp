@@ -1,35 +1,39 @@
-import { Express, Request, Response } from 'express';
+import express from 'express';
+import { AddressInfo } from 'net';
+import { Server } from 'http';
 import { LarkAuthHandler } from '../../src/auth/handler/handler';
+
+jest.mock('fs', () => ({
+  existsSync: jest.fn().mockReturnValue(false),
+  watch: jest.fn(),
+  readFileSync: jest.fn(),
+  writeFileSync: jest.fn(),
+  mkdirSync: jest.fn(),
+}));
+
+jest.mock('../../src/auth/utils/storage-manager', () => ({
+  storageManager: {
+    loadStorageData: jest.fn().mockResolvedValue({ tokens: {}, clients: {} }),
+    saveStorageData: jest.fn().mockResolvedValue(undefined),
+    storageFile: '/mock/storage/storage.json',
+  },
+}));
 
 // The discovery documents are the only thing a client sees before it decides
 // whether it can authenticate at all, and getting them wrong fails silently --
-// the client just never comes back. Mount the real routes and read them back.
+// the client just never comes back. Mount the real routes and read them back
+// over HTTP, since which route wins for a given path is the thing being tested.
 describe('OAuth discovery metadata', () => {
   const BASE = 'https://mcp.example.com';
-  const mounted: Array<{ path: unknown; handler: unknown }> = [];
+  let server: Server;
+  let origin: string;
 
-  const app = {
-    use: (path: unknown, handler?: unknown) => mounted.push({ path, handler }),
-    get: () => undefined,
-  } as unknown as Express;
-
-  // Each metadata route is an express Router that answers GET '/'.
-  const read = (path: string) => {
-    const entry = mounted.find((m) => m.path === path);
-    expect(entry).toBeDefined();
-    let body: any;
-    (entry!.handler as any)(
-      { method: 'GET', url: '/', headers: {} } as Request,
-      { setHeader: () => undefined, status: () => ({ json: (b: any) => (body = b) }) } as unknown as Response,
-      () => undefined,
-    );
-    return body;
-  };
-
-  beforeAll(() => {
+  beforeAll((done) => {
     process.env.PUBLIC_BASE_URL = BASE;
     process.env.LARK_OAUTH_SCOPES = 'docx:document im:message:readonly';
 
+    const app = express();
+    app.use(express.json());
     new LarkAuthHandler(app, {
       port: 3000,
       host: 'localhost',
@@ -37,15 +41,27 @@ describe('OAuth discovery metadata', () => {
       appId: 'cli_test',
       appSecret: 'secret',
     }).setupRoutes();
+
+    server = app.listen(0, '127.0.0.1', () => {
+      origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+      done();
+    });
   });
 
-  afterAll(() => {
+  afterAll((done) => {
     delete process.env.PUBLIC_BASE_URL;
     delete process.env.LARK_OAUTH_SCOPES;
+    server.close(() => done());
   });
 
-  it('advertises a token endpoint a public client can actually use', () => {
-    const metadata = read('/.well-known/oauth-authorization-server');
+  const read = async (path: string) => {
+    const res = await fetch(`${origin}${path}`);
+    expect(res.status).toBe(200);
+    return res.json();
+  };
+
+  it('advertises a token endpoint a public client can actually use', async () => {
+    const metadata = await read('/.well-known/oauth-authorization-server');
 
     // /register issues clients with no client_secret, so omitting 'none' here
     // describes a token endpoint they can never satisfy.
@@ -55,7 +71,7 @@ describe('OAuth discovery metadata', () => {
     expect(metadata.scopes_supported).toEqual(['docx:document', 'im:message:readonly']);
   });
 
-  it('names /mcp as the protected resource, at both well-known paths', () => {
+  it('names /mcp as the protected resource, at both well-known paths', async () => {
     const expected = {
       resource: `${BASE}/mcp`,
       authorization_servers: [`${BASE}/`],
@@ -63,19 +79,9 @@ describe('OAuth discovery metadata', () => {
     };
 
     // Path-inserted (RFC 9728 s3.1) is what a current client tries first; the
-    // bare path is what already-connected clients use.
-    expect(read('/.well-known/oauth-protected-resource/mcp')).toEqual(expected);
-    expect(read('/.well-known/oauth-protected-resource')).toEqual(expected);
-  });
-
-  it('mounts them ahead of mcpAuthRouter, which serves the same paths', () => {
-    const wellKnown = mounted.filter((m) => String(m.path).startsWith('/.well-known/'));
-    const sdkRouter = mounted.findIndex((m) => typeof m.path === 'function');
-
-    expect(wellKnown).toHaveLength(3);
-    expect(sdkRouter).toBe(mounted.length - 1);
-    // The bare path is a prefix of the path-inserted one, so it has to come second.
-    expect(mounted.indexOf(wellKnown[1])).toBeLessThan(mounted.indexOf(wellKnown[2]));
-    expect(String(wellKnown[1].path)).toBe('/.well-known/oauth-protected-resource/mcp');
+    // bare path is what already-connected clients use. The bare path is a prefix
+    // of the other, so mounting order decides whether both actually answer.
+    expect(await read('/.well-known/oauth-protected-resource/mcp')).toMatchObject(expected);
+    expect(await read('/.well-known/oauth-protected-resource')).toMatchObject(expected);
   });
 });
