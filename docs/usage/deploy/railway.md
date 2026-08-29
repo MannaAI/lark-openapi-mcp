@@ -30,6 +30,12 @@ root `Dockerfile`.
 Dockerfile, so the token store lands at `/data/lark-mcp-nodejs/storage.json`.
 Without the volume, every redeploy makes every user reconnect.
 
+The volume mounts over the image's own `/data` and arrives owned by root, so
+`docker-entrypoint.sh` chowns it at runtime and then drops to the `node` user.
+Skipping that produces `EACCES: permission denied, mkdir '/data/lark-mcp-nodejs'`
+at boot, after which `StorageManager` disables the on-disk store and falls back
+to memory -- tokens then survive until the next restart and no further.
+
 **Domain:** generate one, or attach a custom domain. Railway terminates TLS.
 
 **Variables:**
@@ -43,6 +49,7 @@ Without the volume, every redeploy makes every user reconnect.
 | `LARK_DOMAIN` | `https://open.larksuite.com` | Only for Lark international; defaults to `https://open.feishu.cn` for Feishu. |
 | `LARK_TOKEN_MODE` | `user_access_token` | |
 | `LARK_TOOLS` | `search.v2.message.create,docx.builtin.search,docx.v1.document.rawContent` | Read-only search + document retrieval. |
+| `TRUST_PROXY` | `1` | Already set in the image. Without it the SDK's auth router rate-limits every user under the proxy's single IP. |
 
 **Do not set `USER_ACCESS_TOKEN`.** The transport only starts the OAuth flow when
 no static token is configured (`src/mcp-server/transport/streamable.ts`), so
@@ -50,6 +57,11 @@ setting it silently turns every user into one shared service account.
 
 `PORT`, `--host 0.0.0.0`, `--mode streamable`, and `--oauth` are handled by the
 Dockerfile's `CMD`.
+
+**Check the boot logs once.** `[StorageManager]` should be silent. A line about
+the store being disabled means tokens are memory-only, which looks completely
+healthy from outside -- OAuth works, tools work -- right up until the next
+restart logs everyone out.
 
 ## 3. GitHub Actions
 

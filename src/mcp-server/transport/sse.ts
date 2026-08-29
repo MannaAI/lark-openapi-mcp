@@ -19,6 +19,16 @@ export const initSSEServer: InitTransportServerFunction = (
   const app = express();
   const transports: Map<string, SSEServerTransport> = new Map();
 
+  // Behind a TLS terminator (Railway, any reverse proxy) the real client IP only
+  // exists in X-Forwarded-For. Without this the SDK's auth router rate-limits
+  // every user under the proxy's single IP -- one shared bucket, so a handful of
+  // users can 429 each other -- and express-rate-limit logs a validation error on
+  // every request. Opt-in: trusting the header with no proxy in front would let a
+  // client spoof its own IP. The container image sets TRUST_PROXY=1.
+  if (process.env.TRUST_PROXY) {
+    app.set('trust proxy', Number(process.env.TRUST_PROXY) || 1);
+  }
+
   let authHandler: LarkAuthHandler | undefined;
 
   if (!userAccessToken && needAuthFlow) {
