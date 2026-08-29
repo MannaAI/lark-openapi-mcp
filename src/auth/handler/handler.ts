@@ -242,10 +242,20 @@ export class LarkAuthHandler {
       // default when it is missing, but only a client that bothers to.
       response_modes_supported: ['query'],
       // A client picks its registration mechanism from this document, in the
-      // order the spec gives: pre-registration, then Client ID Metadata Documents
-      // if the server says it supports them, then dynamic registration. Without
-      // this flag ChatGPT has only /register to fall back to.
-      client_id_metadata_document_supported: true,
+      // order the spec gives: pre-registration, then Client ID Metadata
+      // Documents if the server says it supports them, then dynamic
+      // registration. Off by default, because advertising it is the only change
+      // that has ever moved ChatGPT -- and it moved it backwards. With the flag
+      // absent ChatGPT registered at /register and stopped there; the moment the
+      // flag appeared it stopped registering at all and now quits straight after
+      // reading this document. Four different versions of the rest of this
+      // metadata made no difference either way.
+      //
+      // The server still resolves a metadata-document client_id and still
+      // verifies its private_key_jwt assertion, so a client that uses CIMD
+      // without being told to is served. This only stops advertising it.
+      // LARK_ADVERTISE_CIMD=1 puts it back without a code change.
+      ...(process.env.LARK_ADVERTISE_CIMD === '1' ? { client_id_metadata_document_supported: true } : {}),
     } as Parameters<typeof metadataHandler>[0];
 
     const protectedResourceMetadata = {
