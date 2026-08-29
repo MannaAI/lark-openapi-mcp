@@ -535,4 +535,43 @@ describe('LarkAuthHandler', () => {
       expect(mockRes.redirect).toHaveBeenCalled();
     });
   });
+  describe('publicBaseUrl', () => {
+    const options: Partial<LarkOAuthClientConfig> = {
+      port: 3000,
+      host: 'localhost',
+      domain: 'test.domain.com',
+      appId: 'test-app-id',
+      appSecret: 'test-app-secret',
+    };
+
+    afterEach(() => {
+      delete process.env.PUBLIC_BASE_URL;
+    });
+
+    it('未设置 PUBLIC_BASE_URL 时应该回退到绑定地址', () => {
+      const handler = new LarkAuthHandler(mockApp, options);
+
+      expect(handler.issuerUrl).toBe('http://localhost:3000');
+      expect(handler.callbackUrl).toBe('http://localhost:3000/callback');
+    });
+
+    it('应该使用 PUBLIC_BASE_URL 并去掉结尾的斜杠', () => {
+      process.env.PUBLIC_BASE_URL = 'https://lark-mcp.example.com/';
+
+      const handler = new LarkAuthHandler(mockApp, options);
+
+      expect(handler.issuerUrl).toBe('https://lark-mcp.example.com');
+      expect(handler.callbackUrl).toBe('https://lark-mcp.example.com/callback');
+    });
+
+    it('应该把 PUBLIC_BASE_URL 传给 provider 作为 redirect_uri', () => {
+      process.env.PUBLIC_BASE_URL = 'https://lark-mcp.example.com';
+
+      new LarkAuthHandler(mockApp, { ...options, scope: ['test:scope'] });
+
+      expect(LarkOAuth2OAuthServerProvider).toHaveBeenCalledWith(
+        expect.objectContaining({ callbackUrl: 'https://lark-mcp.example.com/callback' }),
+      );
+    });
+  });
 });

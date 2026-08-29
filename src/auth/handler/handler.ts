@@ -1,6 +1,6 @@
 import { Express, Request, Response, NextFunction } from 'express';
 import { requireBearerAuth } from '@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js';
-import { mcpAuthRouter } from '@modelcontextprotocol/sdk/server/auth/router.js';
+import { mcpAuthRouter, getOAuthProtectedResourceMetadataUrl } from '@modelcontextprotocol/sdk/server/auth/router.js';
 import { LarkOIDC2OAuthServerProvider, LarkOAuth2OAuthServerProvider } from '../provider';
 import { authStore } from '../store';
 import { generatePKCEPair } from '../utils/pkce';
@@ -21,12 +21,22 @@ export class LarkAuthHandler {
   protected readonly options: LarkOAuthClientConfig;
   protected readonly provider: LarkOIDC2OAuthServerProvider | LarkOAuth2OAuthServerProvider;
 
+  // Behind a proxy the server only ever sees its own bind address, but every URL
+  // below is handed to an external party -- Lark's redirect_uri, the OAuth
+  // discovery metadata, the client's authorize redirect -- so they have to be the
+  // address the outside world reaches. Falls back to the bind address, which is
+  // what the local `lark-mcp login` flow wants.
+  get publicBaseUrl() {
+    const configured = process.env.PUBLIC_BASE_URL;
+    return configured ? configured.replace(/\/+$/, '') : `http://${this.options.host}:${this.options.port}`;
+  }
+
   get callbackUrl() {
-    return `http://${this.options.host}:${this.options.port}/callback`;
+    return `${this.publicBaseUrl}/callback`;
   }
 
   get issuerUrl() {
-    return `http://${this.options.host}:${this.options.port}`;
+    return this.publicBaseUrl;
   }
 
   constructor(
@@ -99,7 +109,14 @@ export class LarkAuthHandler {
   };
 
   authenticateRequest(req: Request, res: Response, next: NextFunction): void {
-    requireBearerAuth({ verifier: this.provider, requiredScopes: [] })(req, res, next);
+    // Without this a 401 carries no pointer to the protected-resource metadata, so
+    // a client that discovers auth from the challenge (rather than by probing
+    // /.well-known) has nothing to follow.
+    requireBearerAuth({
+      verifier: this.provider,
+      requiredScopes: [],
+      resourceMetadataUrl: getOAuthProtectedResourceMetadataUrl(new URL(this.issuerUrl)),
+    })(req, res, next);
   }
 
   async refreshToken(accessToken: string) {
@@ -143,7 +160,7 @@ export class LarkAuthHandler {
 
     authStore.storeCodeVerifier('reauthorize', codeVerifier);
 
-    const authorizeUrl = new URL(`http://${this.options.host}:${this.options.port}/authorize`);
+    const authorizeUrl = new URL(`${this.publicBaseUrl}/authorize`);
     authorizeUrl.searchParams.set('client_id', clientId);
     authorizeUrl.searchParams.set('response_type', 'code');
     authorizeUrl.searchParams.set('code_challenge', codeChallenge);

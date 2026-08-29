@@ -34,8 +34,12 @@ export class StorageManager {
       this.ensureStorageDir();
       this.isInitializedStorageSuccess = true;
     } catch (error) {
-      logger.warn(`[StorageManager] Failed to initialize: ${error}`);
-      logger.warn(
+      // Setting LARK_MCP_ENCRYPTION_KEY is a request for persistent token storage,
+      // so a downgrade to the memory store there is a deploy misconfiguration, not
+      // the ordinary "no keyring on this machine" case.
+      const log = process.env.LARK_MCP_ENCRYPTION_KEY ? logger.error : logger.warn;
+      log(`[StorageManager] Failed to initialize: ${error}`);
+      log(
         '[StorageManager] ⚠️ Builtin User Access Token Store will be disabled. but you can still use it with memory store',
       );
       this.isInitializedStorageSuccess = false;
@@ -43,6 +47,25 @@ export class StorageManager {
   }
 
   private async initializeEncryption(): Promise<void> {
+    // A container has no OS keyring. The Docker image used to shim one in with
+    // gnome-keyring, but that shim rewrote its keyring on every boot, so the key
+    // changed each start and the storage.json written by the previous boot could
+    // no longer be decrypted -- every restart silently logged every user out.
+    // An explicit key is what makes stored tokens survive a restart or redeploy.
+    // keytar remains the default for local CLI use.
+    const envKey = process.env.LARK_MCP_ENCRYPTION_KEY;
+    if (envKey) {
+      if (!/^[0-9a-fA-F]{64}$/.test(envKey)) {
+        throw new Error(
+          `LARK_MCP_ENCRYPTION_KEY must be ${AUTH_CONFIG.ENCRYPTION.KEY_LENGTH} bytes as hex ` +
+            `(${AUTH_CONFIG.ENCRYPTION.KEY_LENGTH * 2} hex characters); got ${envKey.length}`,
+        );
+      }
+      logger.info('[StorageManager] Using encryption key from LARK_MCP_ENCRYPTION_KEY');
+      this.encryptionUtil = new EncryptionUtil(envKey);
+      return;
+    }
+
     try {
       const keytar = await import('keytar');
       let key = await keytar.getPassword(AUTH_CONFIG.SERVER_NAME, AUTH_CONFIG.AES_KEY_NAME);
