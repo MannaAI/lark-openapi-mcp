@@ -170,6 +170,7 @@ describe('LarkOAuth2OAuthServerProvider', () => {
         scopes: ['scope1', 'scope2'],
         expiresAt: expect.any(Number),
         extra: {
+          flow: 'oauth2',
           refreshToken: 'test-refresh-token',
           token: mockTokenResponse,
           appId: 'test-app-id',
@@ -205,6 +206,7 @@ describe('LarkOAuth2OAuthServerProvider', () => {
         scopes: ['scope1', 'scope2'],
         expiresAt: undefined,
         extra: {
+          flow: 'oauth2',
           refreshToken: 'test-refresh-token',
           token: mockTokenResponse,
           appId: 'test-app-id',
@@ -240,6 +242,7 @@ describe('LarkOAuth2OAuthServerProvider', () => {
         scopes: [],
         expiresAt: expect.any(Number),
         extra: {
+          flow: 'oauth2',
           refreshToken: 'test-refresh-token',
           token: mockTokenResponse,
           appId: 'test-app-id',
@@ -390,6 +393,7 @@ describe('LarkOAuth2OAuthServerProvider', () => {
         scopes: [],
         expiresAt: undefined,
         extra: {
+          flow: 'oauth2',
           refreshToken: 'new-refresh-token',
           token: mockTokenResponse,
           appId: 'test-app-id',
@@ -434,6 +438,7 @@ describe('LarkOAuth2OAuthServerProvider', () => {
         scopes: [],
         expiresAt: expect.any(Number),
         extra: {
+          flow: 'oauth2',
           refreshToken: 'new-refresh-token',
           token: mockTokenResponse,
           appId: 'test-app-id',
@@ -527,7 +532,7 @@ describe('LarkOAuth2OAuthServerProvider', () => {
         clientId: 'test-client-id',
         scopes: ['scope1', 'scope2'],
         expiresAt: Date.now() / 1000 + 3600,
-        extra: { refreshToken: 'test-refresh-token' },
+        extra: { flow: 'oauth2', refreshToken: 'test-refresh-token' },
       };
 
       (isTokenValid as jest.Mock).mockResolvedValue({ valid: true, token: mockToken });
@@ -535,6 +540,38 @@ describe('LarkOAuth2OAuthServerProvider', () => {
       const result = await provider.verifyAccessToken('test-token');
 
       expect(result).toEqual(mockToken);
+    });
+
+    it('应该拒绝由 OIDC 流程颁发的 token', async () => {
+      const mockToken = {
+        token: 'oidc-token',
+        clientId: 'test-client-id',
+        scopes: [],
+        expiresAt: Date.now() / 1000 + 3600,
+        extra: { flow: 'oidc', refreshToken: 'test-refresh-token' },
+      };
+
+      (isTokenValid as jest.Mock).mockResolvedValue({ valid: true, token: mockToken });
+
+      const result = await provider.verifyAccessToken('oidc-token');
+
+      expect(result.expiresAt).toBe(1);
+    });
+
+    it('应该拒绝没有记录流程的旧 token', async () => {
+      const mockToken = {
+        token: 'legacy-token',
+        clientId: 'test-client-id',
+        scopes: [],
+        expiresAt: Date.now() / 1000 + 3600,
+        extra: { refreshToken: 'test-refresh-token' },
+      };
+
+      (isTokenValid as jest.Mock).mockResolvedValue({ valid: true, token: mockToken });
+
+      const result = await provider.verifyAccessToken('legacy-token');
+
+      expect(result.expiresAt).toBe(1);
     });
 
     it('应该处理无效token', async () => {

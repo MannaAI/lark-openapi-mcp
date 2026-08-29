@@ -5,7 +5,7 @@ import { AuthorizationParams, OAuthServerProvider } from '@modelcontextprotocol/
 import { AuthInfo } from '@modelcontextprotocol/sdk/server/auth/types.js';
 import { authStore } from '../store';
 import { isTokenValid } from '../utils/is-token-valid';
-import { LarkProxyOAuthServerProviderOptions } from './types';
+import { LarkProxyOAuthServerProviderOptions, OAUTH2_FLOW } from './types';
 import { commonHttpInstance } from '../../utils/http-instance';
 import { logger } from '../../utils/logger';
 
@@ -104,6 +104,7 @@ export class LarkOAuth2OAuthServerProvider implements OAuthServerProvider {
         scopes: token.scope?.split(' ') || [],
         expiresAt,
         extra: {
+          flow: OAUTH2_FLOW,
           token,
           refreshToken: token.refresh_token,
           appId: this._options.appId,
@@ -171,7 +172,7 @@ export class LarkOAuth2OAuthServerProvider implements OAuthServerProvider {
         token: token.access_token,
         scopes: token.scope?.split(' ') || [],
         expiresAt,
-        extra: { refreshToken: token.refresh_token, token, appId, appSecret },
+        extra: { flow: OAUTH2_FLOW, refreshToken: token.refresh_token, token, appId, appSecret },
       });
 
       logger.info(
@@ -191,6 +192,19 @@ export class LarkOAuth2OAuthServerProvider implements OAuthServerProvider {
 
   async verifyAccessToken(token: string): Promise<AuthInfo> {
     const { valid, token: storedToken } = await isTokenValid(token);
+    // The store is a mounted volume, so it survives the server switching flows.
+    // A token minted by the OIDC provider keeps working for calls Lark still
+    // serves on the old consent -- search returns hits -- and fails 99991695
+    // only on message bodies, so nothing ever prompts the client to
+    // re-authorize. Rejecting it here turns that into a 401 the client answers
+    // by running the current flow. Tokens stored before provenance was recorded
+    // carry no flow and are rejected once, for the same reason.
+    if (valid && storedToken?.extra?.flow !== OAUTH2_FLOW) {
+      logger.info(
+        `[LarkOAuth2OAuthServerProvider] Rejecting token for client ${storedToken?.clientId} minted by flow ${storedToken?.extra?.flow || 'unknown'}; client must re-authorize`,
+      );
+      return { ...storedToken!, expiresAt: 1 };
+    }
     if (!valid) {
       return {
         token: storedToken?.token || '',

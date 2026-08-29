@@ -494,6 +494,46 @@ describe('AuthStore', () => {
     });
   });
 
+  describe('default scope backfill', () => {
+    const bareClient = {
+      client_id: 'bare-client',
+      client_secret: 'client-secret',
+      redirect_uris: ['http://localhost:3000/callback'],
+    };
+
+    afterEach(() => {
+      delete process.env.LARK_OAUTH_SCOPES;
+    });
+
+    it('registers a bare client with the advertised scopes', async () => {
+      process.env.LARK_OAUTH_SCOPES = 'im:message:readonly docx:document';
+
+      const registered = await testAuthStore.registerClient(bareClient);
+
+      expect(registered.scope).toBe('im:message:readonly docx:document');
+    });
+
+    it('backfills a client that registered before any scope was configured', async () => {
+      // Registered bare, so nothing was stored -- this is the client that then
+      // asks for no scope and gets an old-consent token back from Lark.
+      await testAuthStore.registerClient(bareClient);
+      process.env.LARK_OAUTH_SCOPES = 'im:message:readonly';
+
+      const client = await testAuthStore.getClient(bareClient.client_id);
+
+      expect(client?.scope).toBe('im:message:readonly');
+    });
+
+    it('leaves a scope the client chose alone', async () => {
+      process.env.LARK_OAUTH_SCOPES = 'im:message:readonly';
+      await testAuthStore.registerClient({ ...bareClient, scope: 'docx:document' });
+
+      const client = await testAuthStore.getClient(bareClient.client_id);
+
+      expect(client?.scope).toBe('docx:document');
+    });
+  });
+
   describe('Integration Tests', () => {
     it('should handle complete token and client lifecycle', async () => {
       const client = {
