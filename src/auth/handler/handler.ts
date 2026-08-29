@@ -163,21 +163,29 @@ export class LarkAuthHandler {
     // never spend, and one that checks the metadata before authorizing gives up
     // the moment it registers, without saying why. Register anything we cannot
     // actually accept as a public client instead; PKCE is what protects it.
-    this.app.use('/register', (req: Request, _res: Response, next: NextFunction) => {
+    this.app.use('/register', (req: Request, res: Response, next: NextFunction) => {
       if (req.method !== 'POST' || !req.body) {
         return next();
       }
       const requested = req.body.token_endpoint_auth_method;
-      logger.info(
-        `[LarkAuthHandler] register: client_name=${req.body.client_name} ` +
-          `token_endpoint_auth_method=${requested ?? '(unset)'} ` +
-          `redirect_uris=${JSON.stringify(req.body.redirect_uris)} ` +
-          `grant_types=${JSON.stringify(req.body.grant_types)} scope=${JSON.stringify(req.body.scope)}`,
-      );
+      // Both sides in full. A client that registers and then walks away without
+      // authorizing says nothing about why; the registration it was handed is the
+      // only evidence of what it objected to, and the request alone does not show
+      // what the SDK's handler made of it.
+      logger.info(`[LarkAuthHandler] register: request ${JSON.stringify(req.body)}`);
       if (!SUPPORTED_CLIENT_AUTH_METHODS.includes(requested)) {
         req.body.token_endpoint_auth_method = 'none';
         logger.info(`[LarkAuthHandler] register: registering as a public client instead`);
       }
+      const json = res.json.bind(res);
+      res.json = (body: unknown) => {
+        const { client_secret, ...rest } = (body ?? {}) as Record<string, unknown>;
+        logger.info(
+          `[LarkAuthHandler] register: response ${res.statusCode} ` +
+            `${JSON.stringify(rest)}${client_secret ? ' (+client_secret, redacted)' : ''}`,
+        );
+        return json(body);
+      };
       next();
     });
 

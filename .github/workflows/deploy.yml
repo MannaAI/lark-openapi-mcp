@@ -18,7 +18,20 @@ on:
       - ".github/workflows/deploy.yml"
 
 jobs:
+  # Railway builds the image itself, so nothing here would ever run the suite --
+  # the OAuth regression tests could go red and still deploy.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: yarn install --frozen-lockfile
+      - run: yarn test
+
   deploy:
+    needs: test
     runs-on: ubuntu-latest
     environment: production
     container: ghcr.io/railwayapp/cli:5.3.1
