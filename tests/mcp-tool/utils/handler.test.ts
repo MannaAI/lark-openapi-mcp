@@ -13,6 +13,10 @@ jest.mock('@larksuiteoapi/node-sdk', () => {
 // 不要模拟原始模块
 jest.unmock('../../../src/mcp-tool/utils/handler');
 
+// Content blocks are a discriminated union; this handler only ever emits the
+// text one, so narrow once here rather than at every assertion.
+const textOf = (result: { content: unknown[] }) => (result.content[0] as { text: string }).text;
+
 describe('larkOapiHandler', () => {
   // 创建测试用的mock函数和对象
 
@@ -81,7 +85,7 @@ describe('larkOapiHandler', () => {
 
     // 验证结果
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('Invalid sdkName');
+    expect(textOf(result)).toContain('Invalid sdkName');
   });
 
   it('应该使用User Access Token当useUAT为true', async () => {
@@ -160,7 +164,7 @@ describe('larkOapiHandler', () => {
     const result = await larkOapiHandler(mockClient as any, params, { tool });
 
     // 验证结果
-    expect(result.content[0].text).toBe('{"success":true}');
+    expect(textOf(result)).toBe('{"success":true}');
     expect(mockClient.request).toHaveBeenCalled();
   });
 
@@ -212,7 +216,7 @@ describe('larkOapiHandler', () => {
 
     // 验证结果
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toBe('"UserAccessToken is invalid or expired"');
+    expect(textOf(result)).toBe('"UserAccessToken is invalid or expired"');
   });
 
   it('应该测试error处理', async () => {
@@ -232,7 +236,7 @@ describe('larkOapiHandler', () => {
 
     // 验证结果
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toBe('"API error"');
+    expect(textOf(result)).toBe('"API error"');
   });
 
   it('应该测试error undefined处理', async () => {
@@ -271,7 +275,7 @@ describe('larkOapiHandler', () => {
 
     // 验证结果
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toBe('"API error"');
+    expect(textOf(result)).toBe('"API error"');
   });
 
   it('应该测试error response处理', async () => {
@@ -291,7 +295,7 @@ describe('larkOapiHandler', () => {
 
     // 验证结果
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toBe('{"code":123,"msg":"API error"}');
+    expect(textOf(result)).toBe('{"code":123,"msg":"API error"}');
   });
 
   it('应该处理缺少options参数的情况', async () => {
@@ -300,7 +304,7 @@ describe('larkOapiHandler', () => {
     // 调用函数但不传options参数
     const result = await larkOapiHandler(mockClient as any, params, undefined as any);
     // 验证结果，应该处理错误
-    expect(result.content[0].text).toBe('"Invalid sdkName"');
+    expect(textOf(result)).toBe('"Invalid sdkName"');
   });
 
   it('应该有userAccessToken，没有params', async () => {
