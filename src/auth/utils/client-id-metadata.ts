@@ -30,10 +30,20 @@ export const isClientIdMetadataUrl = (clientId: string): boolean => {
   }
 };
 
-const isAllowedHost = (clientId: string): boolean => {
-  const { hostname } = new URL(clientId);
-  return allowedHosts().some((host) => hostname === host || hostname.endsWith(`.${host}`));
+/**
+ * The same closed set guards the JWKS fetch as guards the document fetch: both
+ * URLs come out of a document a stranger controls.
+ */
+export const isAllowedCimdHost = (url: string): boolean => {
+  try {
+    const { hostname } = new URL(url);
+    return allowedHosts().some((host) => hostname === host || hostname.endsWith(`.${host}`));
+  } catch {
+    return false;
+  }
 };
+
+const isAllowedHost = isAllowedCimdHost;
 
 // The document is the client's own description of itself, so nothing in it is
 // trusted until it has been checked against the URL it came from.
@@ -59,14 +69,27 @@ const validate = (clientId: string, document: unknown): OAuthClientInformationFu
     return undefined;
   }
 
+  // CIMD s2: a document may not name a shared-secret method, because there is no
+  // registration step in which a secret could have been agreed. Anything else is
+  // the client's own declaration and is kept -- ChatGPT's document says
+  // private_key_jwt, and rewriting that to 'none' is what left this server unable
+  // to authenticate it at all.
+  const authMethod = metadata.token_endpoint_auth_method;
+  if (typeof authMethod === 'string' && authMethod.startsWith('client_secret_')) {
+    logger.error(`[CIMD] ${clientId}: document names shared-secret method ${authMethod}`);
+    return undefined;
+  }
+  if (authMethod === 'private_key_jwt' && typeof metadata.jwks_uri !== 'string') {
+    logger.error(`[CIMD] ${clientId}: private_key_jwt without a jwks_uri`);
+    return undefined;
+  }
+
   return {
     ...(metadata as unknown as OAuthClientInformationFull),
     client_id: clientId,
-    // A document may prefer private_key_jwt -- ChatGPT's does -- but this server
-    // only verifies credentials out of the request body, so the usable
-    // intersection is the public-client method. No secret is stored, so the SDK's
-    // token endpoint skips client authentication and PKCE carries the flow.
-    token_endpoint_auth_method: 'none',
+    // No secret is ever stored for a CIMD client. Possession of the key, checked
+    // against jwks_uri, is what authenticates it at the token endpoint; PKCE
+    // carries the rest of the flow either way.
     client_secret: undefined,
   };
 };

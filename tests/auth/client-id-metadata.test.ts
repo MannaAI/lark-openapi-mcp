@@ -13,6 +13,8 @@ const chatgptDocument = {
   redirect_uris: ['https://chatgpt.com/connector_platform_oauth_redirect'],
   token_endpoint_auth_method: 'private_key_jwt',
   token_endpoint_auth_methods_supported: ['none', 'private_key_jwt'],
+  token_endpoint_auth_signing_alg: 'RS256',
+  jwks_uri: 'https://chatgpt.com/oauth/jwks.json',
   grant_types: ['authorization_code', 'refresh_token'],
   response_types: ['code'],
   client_name: 'ChatGPT',
@@ -42,15 +44,29 @@ describe('Client ID Metadata Documents', () => {
   });
 
   describe('resolveClientIdMetadata', () => {
-    it('resolves a document and downgrades it to a public client', async () => {
+    it("resolves a document and keeps the method it declares", async () => {
       mockFetch(chatgptDocument);
       const client = await resolveClientIdMetadata(CHATGPT);
 
       expect(client?.client_id).toBe(CHATGPT);
       expect(client?.redirect_uris).toEqual(['https://chatgpt.com/connector_platform_oauth_redirect']);
-      // The document asks for private_key_jwt, which this server cannot verify.
-      expect(client?.token_endpoint_auth_method).toBe('none');
+      // Rewriting this to 'none' is what left the token endpoint unable to
+      // authenticate ChatGPT at all.
+      expect(client?.token_endpoint_auth_method).toBe('private_key_jwt');
       expect(client?.client_secret).toBeUndefined();
+    });
+
+    // CIMD s2: there is no registration step in which a shared secret could have
+    // been agreed, so a document naming one is not describing a usable client.
+    it('rejects a document naming a shared-secret method', async () => {
+      mockFetch({ ...chatgptDocument, token_endpoint_auth_method: 'client_secret_post' });
+      expect(await resolveClientIdMetadata(CHATGPT)).toBeUndefined();
+    });
+
+    it('rejects private_key_jwt with no key to check it against', async () => {
+      const { jwks_uri, ...noKeys } = chatgptDocument;
+      mockFetch(noKeys);
+      expect(await resolveClientIdMetadata(CHATGPT)).toBeUndefined();
     });
 
     it('caches, so an authorize and a token request cost one fetch', async () => {
