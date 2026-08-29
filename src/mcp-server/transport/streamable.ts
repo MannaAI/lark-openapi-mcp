@@ -29,6 +29,19 @@ export const initStreamableServer: InitTransportServerFunction = (
     app.set('trust proxy', Number(process.env.TRUST_PROXY) || 1);
   }
 
+  // Nothing else logs per request, so a remote client that never gets past
+  // discovery or auth leaves no trace at all and the server reads as idle rather
+  // than as rejecting something. Method, path and status only -- never the token.
+  app.use((req: Request, res: Response, next: NextFunction) => {
+    res.on('finish', () => {
+      logger.info(
+        `[http] ${req.method} ${req.originalUrl} -> ${res.statusCode}` +
+          `${req.headers.authorization ? ' (bearer)' : ''}`,
+      );
+    });
+    next();
+  });
+
   let authHandler: LarkAuthHandler | undefined;
 
   if (!userAccessToken && needAuthFlow) {
