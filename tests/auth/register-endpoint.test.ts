@@ -100,9 +100,8 @@ describe('POST /register', () => {
     expect(status).toBe(201);
     expect(body.token_endpoint_auth_method).toBe('none');
     expect(body.redirect_uris).toEqual(['https://chatgpt.com/connector/oauth/abc123']);
-    // It asks for 'none' and then discards a registration that honours it.
-    expect(body.client_secret).toEqual(expect.any(String));
-    expect(body.client_secret_expires_at).toBe(0);
+    // A public client gets no secret, which is what 'none' means.
+    expect(body.client_secret).toBeUndefined();
     // A client that asked for no scope has nothing to put on the authorize URL,
     // so the store fills in what the metadata advertises.
     expect(body.scope).toBe('docx:document im:message:readonly');

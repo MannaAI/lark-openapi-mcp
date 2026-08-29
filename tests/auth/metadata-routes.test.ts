@@ -68,6 +68,8 @@ describe('OAuth discovery metadata', () => {
     expect(metadata.token_endpoint_auth_methods_supported).toContain('none');
     expect(metadata.code_challenge_methods_supported).toContain('S256');
     expect(metadata.registration_endpoint).toBe(`${BASE}/register`);
+    // Without this a client has only the deprecated /register path to fall back to.
+    expect(metadata.client_id_metadata_document_supported).toBe(true);
     expect(metadata.scopes_supported).toEqual(['docx:document', 'im:message:readonly']);
   });
 
