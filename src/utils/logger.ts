@@ -10,8 +10,16 @@ export enum LogLevel {
   DEBUG = 4,
 }
 
+// A deployed server has no way to pass --debug, and the default WARN level
+// discards every OAuth breadcrumb in this codebase (they are all logger.info),
+// so a client failing at discovery or auth leaves the logs completely empty.
+const levelFromEnv = (): LogLevel | undefined => {
+  const name = process.env.LOG_LEVEL?.trim().toUpperCase();
+  return name && name in LogLevel ? (LogLevel[name as keyof typeof LogLevel] as LogLevel) : undefined;
+};
+
 export class Logger {
-  private level: LogLevel = LogLevel.WARN;
+  private level: LogLevel = levelFromEnv() ?? LogLevel.WARN;
 
   static logFilesToKeep = 7;
 
@@ -70,10 +78,16 @@ export class Logger {
     }
   };
 
+  // stderr, not stdout: under the stdio transport stdout carries the MCP protocol
+  // itself, so writing logs there corrupts the stream. warn/error already went to
+  // the console; info/debug went only to a log file, which inside a container is
+  // a file nobody can read -- so an OAuth flow failing left no visible trace.
+  // Both are still gated by the level, which defaults to WARN.
   debug = (message: string) => {
     if (this.level < LogLevel.DEBUG) {
       return;
     }
+    console.error(`[DEBUG] ${message}`);
     this.log(`[DEBUG] ${message}`);
   };
 
@@ -81,6 +95,7 @@ export class Logger {
     if (this.level < LogLevel.INFO) {
       return;
     }
+    console.error(`[INFO] ${message}`);
     this.log(`[INFO] ${message}`);
   };
 
