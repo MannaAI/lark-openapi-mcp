@@ -79,11 +79,19 @@ GitHub environment holding:
 Point the MCP client at `https://<your-domain>/mcp`. Discovery is served from
 `PUBLIC_BASE_URL`:
 
-- `/.well-known/oauth-protected-resource`
+- `/.well-known/oauth-protected-resource/mcp`
+- `/.well-known/oauth-protected-resource` (same document, for clients that
+  predate the path-inserted form in RFC 9728 s3.1)
 - `/.well-known/oauth-authorization-server`
 
 A 401 also carries `WWW-Authenticate: Bearer ..., resource_metadata="..."` for
 clients that discover auth from the challenge rather than by probing.
+
+`token_endpoint_auth_methods_supported` includes `none`, because `/register`
+hands out public clients with no `client_secret`. A client that reads the
+metadata strictly and finds only `client_secret_post` there concludes it can
+never complete the token exchange, and abandons the flow after registering --
+without ever opening the authorize URL, so no login prompt appears at all.
 
 **Scopes.** With `LARK_OAUTH_SCOPES` unset nothing is advertised, and a client
 that offers to request scopes has an empty list to choose from -- ChatGPT says
@@ -100,17 +108,18 @@ here.
 Verify before wiring up a client:
 
 ```bash
-curl -s https://<your-domain>/.well-known/oauth-protected-resource
-# {"resource":"https://<your-domain>/",
+curl -s https://<your-domain>/.well-known/oauth-protected-resource/mcp
+# {"resource":"https://<your-domain>/mcp",
 #  "authorization_servers":["https://<your-domain>/"]}
 # Both must be the public HTTPS origin, never http://localhost:3000.
-# The trailing slash is URL normalisation and is expected either way.
+# `resource` is the MCP endpoint, and has to match the `resource` parameter the
+# client sends; the issuer's trailing slash is URL normalisation.
 
 curl -si -X POST https://<your-domain>/mcp \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize"}' | grep -i '^www-authenticate'
 # WWW-Authenticate: Bearer error="invalid_token", ...
-#   resource_metadata="https://<your-domain>/.well-known/oauth-protected-resource"
+#   resource_metadata="https://<your-domain>/.well-known/oauth-protected-resource/mcp"
 ```
 
 The same checks run locally against the image:

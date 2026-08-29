@@ -1,6 +1,7 @@
 import { Express, Request, Response, NextFunction } from 'express';
 import { requireBearerAuth } from '@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js';
-import { mcpAuthRouter, getOAuthProtectedResourceMetadataUrl } from '@modelcontextprotocol/sdk/server/auth/router.js';
+import { mcpAuthRouter, createOAuthMetadata } from '@modelcontextprotocol/sdk/server/auth/router.js';
+import { metadataHandler } from '@modelcontextprotocol/sdk/server/auth/handlers/metadata.js';
 import { LarkOIDC2OAuthServerProvider, LarkOAuth2OAuthServerProvider } from '../provider';
 import { authStore } from '../store';
 import { advertisedScopes } from '../config';
@@ -38,6 +39,17 @@ export class LarkAuthHandler {
 
   get issuerUrl() {
     return this.publicBaseUrl;
+  }
+
+  // The protected resource is the MCP endpoint itself, not the origin. Clients
+  // send this exact string as the `resource` parameter (RFC 8707) and compare it
+  // against the `resource` in the metadata below, so the two have to agree.
+  get resourceUrl() {
+    return `${this.publicBaseUrl}/mcp`;
+  }
+
+  get protectedResourceMetadataUrl() {
+    return `${this.publicBaseUrl}/.well-known/oauth-protected-resource/mcp`;
   }
 
   constructor(
@@ -111,11 +123,43 @@ export class LarkAuthHandler {
     // provider ignores requested scopes and Lark grants whatever the app itself
     // was granted, so advertising them changes what a client can display, not
     // what a token can reach.
+    const scopesSupported = advertisedScopes();
+    const issuerUrl = new URL(this.issuerUrl);
+
+    // Discovery metadata, served ahead of mcpAuthRouter so these routes win, to
+    // correct two things the pinned SDK (1.12.1) gets wrong for a strict client:
+    //
+    // - token_endpoint_auth_methods_supported is hardcoded to
+    //   ["client_secret_post"], but /register hands out public clients: the
+    //   response carries no client_secret at all. Read literally, the metadata
+    //   describes a token endpoint the client it just registered can never
+    //   satisfy. ChatGPT registers, reads this, and stops -- it never opens the
+    //   authorize URL, which is why no OAuth prompt ever appears.
+    // - the protected resource is reported as the origin rather than /mcp, so it
+    //   does not match the `resource` the client sends, and the metadata is only
+    //   published at the bare well-known path rather than the path-inserted one
+    //   (RFC 9728 s3.1) that an MCP 2025-06-18 client looks for first.
+    const oauthMetadata = {
+      ...createOAuthMetadata({ provider: this.provider, issuerUrl, scopesSupported }),
+      token_endpoint_auth_methods_supported: ['client_secret_post', 'none'],
+    };
+    const protectedResourceMetadata = {
+      resource: this.resourceUrl,
+      authorization_servers: [oauthMetadata.issuer],
+      scopes_supported: scopesSupported,
+    };
+
+    this.app.use('/.well-known/oauth-authorization-server', metadataHandler(oauthMetadata));
+    // Both spellings: the path-inserted one for clients that follow the current
+    // spec, the bare one for the clients already connected against it.
+    this.app.use('/.well-known/oauth-protected-resource/mcp', metadataHandler(protectedResourceMetadata));
+    this.app.use('/.well-known/oauth-protected-resource', metadataHandler(protectedResourceMetadata));
+
     this.app.use(
       mcpAuthRouter({
         provider: this.provider,
-        issuerUrl: new URL(this.issuerUrl),
-        scopesSupported: advertisedScopes(),
+        issuerUrl,
+        scopesSupported,
       }),
     );
     this.app.get('/callback', (req, res) => this.callback(req, res));
@@ -128,7 +172,7 @@ export class LarkAuthHandler {
     requireBearerAuth({
       verifier: this.provider,
       requiredScopes: [],
-      resourceMetadataUrl: getOAuthProtectedResourceMetadataUrl(new URL(this.issuerUrl)),
+      resourceMetadataUrl: this.protectedResourceMetadataUrl,
     })(req, res, next);
   }
 
