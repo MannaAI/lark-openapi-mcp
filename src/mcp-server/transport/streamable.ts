@@ -55,8 +55,43 @@ export const initStreamableServer: InitTransportServerFunction = (
     }
   }
 
+  // Methods that describe the server rather than reach Lark with anybody's
+  // identity. Answering these without a token costs nothing -- the tool list is
+  // generated from static metadata and is the same for every user -- and it is
+  // what lets a client show what the server offers before asking anyone to sign
+  // in. ChatGPT registers an OAuth client, never opens an authorization window,
+  // and reports "no actions found"; unauthenticated it could at least see that
+  // there are 29 of them. Every method that actually calls Lark still needs a
+  // bearer, so this widens what can be read about the server, not what can be
+  // read through it.
+  const UNAUTHENTICATED_METHODS = new Set([
+    'initialize',
+    'notifications/initialized',
+    'ping',
+    'tools/list',
+    'prompts/list',
+    'resources/list',
+    'resources/templates/list',
+  ]);
+
+  const isDiscoveryOnly = (body: unknown): boolean => {
+    const messages = Array.isArray(body) ? body : [body];
+    return (
+      messages.length > 0 &&
+      messages.every((message) => {
+        const method = (message as { method?: unknown } | null)?.method;
+        return typeof method === 'string' && UNAUTHENTICATED_METHODS.has(method);
+      })
+    );
+  };
+
   const authMiddleware = (req: Request, res: Response, next: NextFunction) => {
     if (authHandler && oauth) {
+      // A bearer is still honoured when one is sent -- this only stops the
+      // request being rejected when one is not.
+      if (!req.headers.authorization && isDiscoveryOnly(req.body)) {
+        return next();
+      }
       authHandler.authenticateRequest(req, res, next);
     } else {
       const authToken = req.headers.authorization?.split(' ')[1];
