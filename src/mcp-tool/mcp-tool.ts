@@ -199,7 +199,11 @@ export class LarkMcpTool {
               logger.info(`[LarkMcpTool] Calling tool: ${tool.name}`);
               const result = await handler(this.client, { ...params, useUAT: shouldUseUAT }, { userAccessToken, tool });
 
-              const errorCode = safeJsonParse(result.content?.[0]?.text as string, { code: 0 }).code;
+              // Content blocks are a discriminated union, and only the text one
+              // carries the API error payload.
+              const first = result.content?.[0];
+              const firstText = first?.type === 'text' ? first.text : undefined;
+              const errorCode = safeJsonParse(firstText, { code: 0 }).code;
               if (
                 result.isError &&
                 [
@@ -212,7 +216,7 @@ export class LarkMcpTool {
                 );
                 // user access token unauthorized the scope or invalid, reAuthorize
                 const { authorizeUrl } = await this.reAuthorize();
-                return this.getReAuthorizeMessage(authorizeUrl, errorCode, result.content?.[0]?.text as string);
+                return this.getReAuthorizeMessage(authorizeUrl, errorCode, firstText);
               }
 
               return result;

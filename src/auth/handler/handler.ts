@@ -1,6 +1,6 @@
 import { Express, Request, Response, NextFunction } from 'express';
 import { requireBearerAuth } from '@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js';
-import { mcpAuthRouter, createOAuthMetadata } from '@modelcontextprotocol/sdk/server/auth/router.js';
+import { mcpAuthRouter } from '@modelcontextprotocol/sdk/server/auth/router.js';
 import { metadataHandler } from '@modelcontextprotocol/sdk/server/auth/handlers/metadata.js';
 import { LarkOIDC2OAuthServerProvider, LarkOAuth2OAuthServerProvider } from '../provider';
 import { authStore } from '../store';
@@ -131,69 +131,68 @@ export class LarkAuthHandler {
     const scopesSupported = advertisedScopes();
     const issuerUrl = new URL(this.issuerUrl);
 
-    // Discovery metadata, served ahead of mcpAuthRouter so these routes win, to
-    // correct two things the pinned SDK (1.12.1) gets wrong for a strict client:
-    //
-    // - token_endpoint_auth_methods_supported is hardcoded to
-    //   ["client_secret_post"], but /register hands out public clients: the
-    //   response carries no client_secret at all. Read literally, the metadata
-    //   describes a token endpoint the client it just registered can never
-    //   satisfy. ChatGPT registers, reads this, and stops -- it never opens the
-    //   authorize URL, which is why no OAuth prompt ever appears.
-    // - the protected resource is reported as the origin rather than /mcp, so it
-    //   does not match the `resource` the client sends, and the metadata is only
-    //   published at the bare well-known path rather than the path-inserted one
-    //   (RFC 9728 s3.1) that an MCP 2025-06-18 client looks for first.
-    const oauthMetadata = {
-      ...createOAuthMetadata({ provider: this.provider, issuerUrl, scopesSupported }),
-      token_endpoint_auth_methods_supported: SUPPORTED_CLIENT_AUTH_METHODS,
-    };
-    const protectedResourceMetadata = {
-      resource: this.resourceUrl,
-      authorization_servers: [oauthMetadata.issuer],
-      scopes_supported: scopesSupported,
-    };
-
     // The SDK's registration handler treats a client as public only when it asks
     // for token_endpoint_auth_method: 'none'. Omit the field -- RFC 7591 then
     // defaults it to client_secret_basic -- and it mints a client_secret instead.
     // Nothing here can honour that: the token endpoint reads credentials from the
-    // request body, never the Authorization header, and the metadata above
-    // advertises no such method. So the client walks away holding a secret it can
-    // never spend, and one that checks the metadata before authorizing gives up
-    // the moment it registers, without saying why. Register anything we cannot
+    // request body, never the Authorization header, and the metadata advertises
+    // no such method. So the client walks away holding a secret it can never
+    // spend, and one that checks the metadata before authorizing gives up the
+    // moment it registers, without saying why. Register anything we cannot
     // actually accept as a public client instead; PKCE is what protects it.
-    this.app.use('/register', (req: Request, _res: Response, next: NextFunction) => {
+    // Still true as of SDK 1.30.
+    this.app.use('/register', (req: Request, res: Response, next: NextFunction) => {
       if (req.method !== 'POST' || !req.body) {
         return next();
       }
       const requested = req.body.token_endpoint_auth_method;
-      logger.info(
-        `[LarkAuthHandler] register: client_name=${req.body.client_name} ` +
-          `token_endpoint_auth_method=${requested ?? '(unset)'} ` +
-          `redirect_uris=${JSON.stringify(req.body.redirect_uris)} ` +
-          `grant_types=${JSON.stringify(req.body.grant_types)} scope=${JSON.stringify(req.body.scope)}`,
-      );
+      // Both sides in full. A client that registers and then walks away without
+      // authorizing says nothing about why; the registration it was handed is the
+      // only evidence of what it objected to, and the request alone does not show
+      // what the SDK's handler made of it.
+      logger.info(`[LarkAuthHandler] register: request ${JSON.stringify(req.body)}`);
       if (!SUPPORTED_CLIENT_AUTH_METHODS.includes(requested)) {
         req.body.token_endpoint_auth_method = 'none';
         logger.info(`[LarkAuthHandler] register: registering as a public client instead`);
       }
+      const json = res.json.bind(res);
+      res.json = (body: unknown) => {
+        const { client_secret, ...rest } = (body ?? {}) as Record<string, unknown>;
+        logger.info(
+          `[LarkAuthHandler] register: response ${res.statusCode} ` +
+            `${JSON.stringify(rest)}${client_secret ? ' (+client_secret, redacted)' : ''}`,
+        );
+        return json(body);
+      };
       next();
     });
-
-    this.app.use('/.well-known/oauth-authorization-server', metadataHandler(oauthMetadata));
-    // Both spellings: the path-inserted one for clients that follow the current
-    // spec, the bare one for the clients already connected against it.
-    this.app.use('/.well-known/oauth-protected-resource/mcp', metadataHandler(protectedResourceMetadata));
-    this.app.use('/.well-known/oauth-protected-resource', metadataHandler(protectedResourceMetadata));
 
     this.app.use(
       mcpAuthRouter({
         provider: this.provider,
         issuerUrl,
         scopesSupported,
+        // The protected resource is the MCP endpoint itself, not the origin.
+        // Clients send this exact string as the RFC 8707 `resource` and compare it
+        // against the metadata, and it is what makes the SDK publish the
+        // path-inserted well-known document (RFC 9728 s3.1) an MCP 2025-06-18
+        // client looks for first.
+        resourceServerUrl: new URL(this.resourceUrl),
       }),
     );
+
+    // Clients that connected before the path-inserted document existed still ask
+    // here. Mounted after the router, because as a prefix of the path-inserted
+    // path it would otherwise shadow it.
+    this.app.use(
+      '/.well-known/oauth-protected-resource',
+      metadataHandler({
+        resource: this.resourceUrl,
+        authorization_servers: [issuerUrl.href],
+        scopes_supported: scopesSupported,
+      }),
+    );
+
     this.app.get('/callback', (req, res) => this.callback(req, res));
   };
 

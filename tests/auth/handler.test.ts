@@ -522,6 +522,9 @@ describe('LarkAuthHandler', () => {
       expect(mockMcpAuthRouter.mcpAuthRouter).toHaveBeenCalledWith({
         provider: expect.any(Object),
         issuerUrl: expect.any(URL),
+        scopesSupported: undefined,
+        // Drives both the `resource` value and the path-inserted well-known path.
+        resourceServerUrl: new URL('http://localhost:3000/mcp'),
       });
       expect(mockApp.use).toHaveBeenCalledWith(mockRouter);
       expect(mockApp.get).toHaveBeenCalledWith('/callback', expect.any(Function));

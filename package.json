@@ -42,7 +42,7 @@
   },
   "dependencies": {
     "@larksuiteoapi/node-sdk": "^1.50.0",
-    "@modelcontextprotocol/sdk": "^1.12.1",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "axios": "^1.8.4",
     "commander": "^13.1.0",
     "dotenv": "^16.4.7",

@@ -532,7 +532,7 @@ describe('LarkAuthHandlerLocal', () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
 
       expect(consoleErrorSpy).toHaveBeenCalledWith(
-        '[LarkAuthHandlerLocal] callback: Error stopping server: Error: Stop server error',
+        '[ERROR] [LarkAuthHandlerLocal] callback: Error stopping server: Error: Stop server error',
       );
 
       // Restore mocks
