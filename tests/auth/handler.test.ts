@@ -487,6 +487,7 @@ describe('LarkAuthHandler', () => {
       expect(mockRequireBearerAuth.requireBearerAuth).toHaveBeenCalledWith({
         verifier: expect.any(Object),
         requiredScopes: [],
+        resourceMetadataUrl: 'http://localhost:3000/.well-known/oauth-protected-resource/mcp',
       });
       expect(mockMiddleware).toHaveBeenCalledWith(mockReq, mockRes, mockNext);
     });
