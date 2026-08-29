@@ -6,12 +6,21 @@ import { LarkOIDC2OAuthServerProvider, LarkOAuth2OAuthServerProvider } from '../
 import { authStore } from '../store';
 import { advertisedScopes } from '../config';
 import { generatePKCEPair } from '../utils/pkce';
+import { CLIENT_ASSERTION_TYPE, readAssertionSubject, verifyClientAssertion } from '../utils/client-assertion';
 import { logger } from '../../utils/logger';
 
-// Everything the token endpoint can actually verify. client_secret_basic is
+// What a dynamically registered client may ask for. client_secret_basic is
 // absent on purpose: the SDK's client authentication reads client_id and
-// client_secret out of the request body only.
+// client_secret out of the request body only. private_key_jwt is absent because
+// a DCR client has no published key to check an assertion against -- that only
+// works for a client whose id is a metadata document.
 const SUPPORTED_CLIENT_AUTH_METHODS = ['client_secret_post', 'none'];
+
+// What the token endpoint can verify, which is the above plus the assertion a
+// CIMD client signs with the key at its jwks_uri. ChatGPT's document declares
+// `token_endpoint_auth_method: private_key_jwt`, and a client that reads this
+// list before it authorizes has no reason to start a flow it cannot finish.
+const ADVERTISED_CLIENT_AUTH_METHODS = [...SUPPORTED_CLIENT_AUTH_METHODS, 'private_key_jwt'];
 
 export interface LarkOAuthClientConfig {
   port: number;
@@ -120,6 +129,54 @@ export class LarkAuthHandler {
     }
   }
 
+  // The SDK's client authentication understands client_id and client_secret and
+  // nothing else, so a client that authenticates by signed assertion is checked
+  // here, ahead of it. Two jobs: reject an assertion that does not verify, and
+  // reject a client that declared private_key_jwt and then sent none -- the
+  // second is the one that matters, since without it declaring the method would
+  // be a way of asking to skip authentication entirely.
+  protected async authenticateAssertion(req: Request, res: Response, next: NextFunction): Promise<void> {
+    const { client_assertion: assertion, client_assertion_type: assertionType } = req.body;
+    const clientId = req.body.client_id || (typeof assertion === 'string' && readAssertionSubject(assertion));
+
+    const fail = (description: string) => {
+      logger.error(`[LarkAuthHandler] token: ${description}`);
+      res.status(401).json({ error: 'invalid_client', error_description: description });
+    };
+
+    if (!clientId) {
+      return next();
+    }
+    const client = await authStore.getClient(clientId);
+    // An unknown client is the SDK's error to report, in its own shape.
+    if (!client) {
+      return next();
+    }
+
+    const declared = (client as { token_endpoint_auth_method?: string }).token_endpoint_auth_method;
+    if (!assertion) {
+      if (declared === 'private_key_jwt') {
+        return fail(`${clientId} declares private_key_jwt but sent no client_assertion`);
+      }
+      return next();
+    }
+
+    if (assertionType !== CLIENT_ASSERTION_TYPE) {
+      return fail(`unsupported client_assertion_type ${JSON.stringify(assertionType)}`);
+    }
+
+    const error = await verifyClientAssertion(client, assertion, [`${this.publicBaseUrl}/token`, this.issuerUrl]);
+    if (error) {
+      return fail(`${clientId}: ${error}`);
+    }
+
+    // The SDK reads client_id out of the body and requires it. RFC 7523 lets a
+    // client leave it out and be named by the assertion alone.
+    req.body.client_id = clientId;
+    logger.info(`[LarkAuthHandler] token: verified private_key_jwt assertion for ${clientId}`);
+    next();
+  }
+
   setupRoutes = (): void => {
     logger.info(`[LarkAuthHandler] setupRoutes: issuerUrl: ${this.issuerUrl}`);
     // A client that finds no scopes_supported has nothing to offer the user to
@@ -179,7 +236,8 @@ export class LarkAuthHandler {
     const oauthMetadata = {
       ...createOAuthMetadata({ provider: this.provider, issuerUrl, scopesSupported }),
       issuer: this.issuerUrl,
-      token_endpoint_auth_methods_supported: SUPPORTED_CLIENT_AUTH_METHODS,
+      token_endpoint_auth_methods_supported: ADVERTISED_CLIENT_AUTH_METHODS,
+      token_endpoint_auth_signing_alg_values_supported: ['RS256'],
       // Also present on all three, absent here. RFC 8414 lets a client assume the
       // default when it is missing, but only a client that bothers to.
       response_modes_supported: ['query'],
@@ -196,6 +254,13 @@ export class LarkAuthHandler {
       scopes_supported: scopesSupported,
       bearer_methods_supported: ['header'],
     };
+
+    this.app.use('/token', (req: Request, res: Response, next: NextFunction) => {
+      if (req.method !== 'POST' || !req.body) {
+        return next();
+      }
+      this.authenticateAssertion(req, res, next).catch(next);
+    });
 
     // Both documents are served ahead of the SDK's own router, which would
     // otherwise answer with the trailing-slash issuer. The router still owns

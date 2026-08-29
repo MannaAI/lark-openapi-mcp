@@ -80,6 +80,55 @@ describe('OAuth discovery metadata', () => {
     expect((await read('/.well-known/oauth-authorization-server')).issuer).toBe(BASE);
   });
 
+  // ChatGPT's Client ID Metadata Document declares private_key_jwt. A client
+  // that reads this list before it authorizes has no reason to start a flow it
+  // cannot finish.
+  it('advertises the assertion method a CIMD client authenticates with', async () => {
+    const metadata = await read('/.well-known/oauth-authorization-server');
+    expect(metadata.token_endpoint_auth_methods_supported).toContain('private_key_jwt');
+    expect(metadata.token_endpoint_auth_signing_alg_values_supported).toEqual(['RS256']);
+  });
+
+  // The branch that matters: declaring private_key_jwt must not become a way of
+  // asking to skip client authentication.
+  it('refuses a token request from a private_key_jwt client that sent no assertion', async () => {
+    const clientId = 'https://chatgpt.com/oauth/client.json';
+    // Only the server's own outbound fetch is mocked. Driving the endpoint uses
+    // the real one, so a mock that swallowed both would pass without ever
+    // reaching express.
+    const realFetch = global.fetch;
+    global.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (url.startsWith(origin)) {
+        return realFetch(input, init);
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          client_id: clientId,
+          client_name: 'ChatGPT',
+          redirect_uris: ['https://chatgpt.com/connector_platform_oauth_redirect'],
+          token_endpoint_auth_method: 'private_key_jwt',
+          jwks_uri: 'https://chatgpt.com/oauth/jwks.json',
+        }),
+      } as unknown as Response;
+    }) as typeof fetch;
+
+    try {
+      const res = await fetch(`${origin}/token`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ grant_type: 'authorization_code', client_id: clientId, code: 'x' }),
+      });
+
+      expect(res.status).toBe(401);
+      expect((await res.json()).error).toBe('invalid_client');
+    } finally {
+      global.fetch = realFetch;
+    }
+  });
+
   it('names /mcp as the protected resource, at both well-known paths', async () => {
     const expected = {
       resource: `${BASE}/mcp`,
