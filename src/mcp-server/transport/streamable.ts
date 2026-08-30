@@ -164,7 +164,12 @@ export const initStreamableServer: InitTransportServerFunction = (
     if (authHandler && oauth) {
       // A bearer is still honoured when one is sent -- this only stops the
       // request being rejected when one is not.
-      if (!req.headers.authorization && needsNoIdentity(req.body)) {
+      //
+      // POST only. A GET has no body, so needsNoIdentity() is vacuously true for
+      // it and the bypass swallowed the SSE probe whole: the probe went on
+      // getting 405 with no WWW-Authenticate, which is the exact thing the GET
+      // was routed through this middleware to fix.
+      if (req.method === 'POST' && !req.headers.authorization && needsNoIdentity(req.body)) {
         return next();
       }
       authHandler.authenticateRequest(req, res, next);
