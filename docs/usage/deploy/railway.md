@@ -1,9 +1,19 @@
 # Deploying to Railway
 
-This fork runs as a remote MCP server that ChatGPT (or any MCP client supporting
-OAuth) connects to, where each user authorizes with their own Lark identity. The
-bearer token an MCP client holds *is* that user's Lark `user_access_token`, so
-searches run against what that employee can see, including their own DMs.
+This fork runs as a remote MCP server that an MCP client connects to, where each
+user acts with their own Lark identity. The bearer token a client holds *is*
+that user's Lark `user_access_token`, so every call runs against what that
+employee can already see.
+
+Current state, as of 2026-08-30:
+
+- **Claude connects over OAuth and works.**
+- **ChatGPT cannot complete an OAuth flow** — not against this server and not
+  against Linear's either, so it is not something to fix here. It connects with
+  Authentication set to No Auth and a per-person URL from `/my-token`. See
+  [5. ChatGPT](#5-chatgpt).
+- **Messages and DMs are not exposed.** `LARK_TOOLS` and `LARK_OAUTH_SCOPES`
+  cover docs, drive, wiki and calendar only.
 
 Two things upstream did not support are what make this possible:
 
@@ -48,9 +58,42 @@ to memory -- tokens then survive until the next restart and no further.
 | `LARK_MCP_ENCRYPTION_KEY` | `openssl rand -hex 32` | 64 hex characters. Changing it invalidates every stored token. |
 | `LARK_DOMAIN` | `https://open.larksuite.com` | Only for Lark international; defaults to `https://open.feishu.cn` for Feishu. |
 | `LARK_TOKEN_MODE` | `user_access_token` | |
-| `LARK_TOOLS` | `search.v2.message.create,docx.builtin.search,docx.v1.document.rawContent` | Read-only search + document retrieval. |
+| `LARK_TOOLS` | see below | Comma-separated. Deliberately excludes every `im.*` tool. |
 | `TRUST_PROXY` | `1` | Already set in the image. Without it the SDK's auth router rate-limits every user under the proxy's single IP. |
-| `LARK_OAUTH_SCOPES` | `docx:document drive:drive wiki:wiki search:message im:chat:readonly im:chat.members:read im:message:readonly im:message.p2p_msg:get_as_user` | **Required for the IM tools.** See below. |
+| `LARK_OAUTH_SCOPES` | see below | Space-separated. Must be non-empty, or the server falls back to the legacy `authen/v1` flow. |
+
+`LARK_TOOLS` as deployed -- docs, drive, wiki and calendar, read and write:
+
+```
+docx.builtin.search,docx.builtin.import,docx.v1.document.get,
+docx.v1.document.rawContent,docx.v1.document.create,docx.v1.documentBlock.list,
+docx.v1.documentBlock.patch,docx.v1.documentBlock.batchUpdate,
+docx.v1.documentBlockChildren.create,docx.v1.documentBlockChildren.batchDelete,
+docx.v1.documentBlockDescendant.create,drive.v1.file.list,
+drive.v1.file.createFolder,drive.v1.meta.batchQuery,wiki.v2.space.list,
+wiki.v2.space.getNode,wiki.v2.spaceNode.list,calendar.v4.calendar.list,
+calendar.v4.calendar.primary,calendar.v4.calendarEvent.list,
+calendar.v4.calendarEvent.get,calendar.v4.calendarEvent.search,
+calendar.v4.calendarEvent.instances,calendar.v4.calendarEvent.create,
+calendar.v4.calendarEvent.patch,calendar.v4.calendarEvent.delete,
+calendar.v4.calendarEventAttendee.list,calendar.v4.calendarEventAttendee.create,
+calendar.v4.freebusy.list,contact.v3.user.get,contact.v3.user.batch
+```
+
+`LARK_OAUTH_SCOPES` to match:
+
+```
+docx:document drive:drive wiki:wiki calendar:calendar
+calendar:calendar.event:read calendar:calendar.event:create
+calendar:calendar.event:update calendar:calendar.event:delete
+calendar:calendar.free_busy:read
+```
+
+The same permissions have to be granted to the Lark app itself and the version
+published, or the calendar tools fail no matter what is advertised here. Scope
+names came from `larksuite/cli`'s own registry
+(`internal/registry/scope_priorities.json`), not from the published reference,
+which contradicts the product often enough to be worth distrusting.
 
 **Do not set `USER_ACCESS_TOKEN`.** The transport only starts the OAuth flow when
 no static token is configured (`src/mcp-server/transport/streamable.ts`), so
@@ -87,8 +130,10 @@ Point the MCP client at `https://<your-domain>/mcp`. Discovery is served from
 A 401 also carries `WWW-Authenticate: Bearer ..., resource_metadata="..."` for
 clients that discover auth from the challenge rather than by probing.
 
-`token_endpoint_auth_methods_supported` lists the two methods the token endpoint
-can actually verify, and `/register` will not hand back anything else: a client
+`token_endpoint_auth_methods_supported` lists the methods the token endpoint can
+actually verify -- `client_secret_post`, `none`, and `private_key_jwt` for a
+client whose `client_id` is a metadata document -- and `/register` will not hand
+back anything else: a client
 that omits `token_endpoint_auth_method`, or asks for one of the methods that
 reads credentials from the `Authorization` header, is registered as a public
 client instead. Otherwise it leaves holding a `client_secret` that nothing here
@@ -117,10 +162,13 @@ Verify before wiring up a client:
 ```bash
 curl -s https://<your-domain>/.well-known/oauth-protected-resource/mcp
 # {"resource":"https://<your-domain>/mcp",
-#  "authorization_servers":["https://<your-domain>/"]}
+#  "authorization_servers":["https://<your-domain>"]}
 # Both must be the public HTTPS origin, never http://localhost:3000.
 # `resource` is the MCP endpoint, and has to match the `resource` parameter the
-# client sends; the issuer's trailing slash is URL normalisation.
+# client sends. No trailing slash on the issuer: RFC 8414 s3.3 requires it to be
+# identical to the identifier the well-known path was inserted into, and the SDK
+# publishes URL.href, which appends one. See `oauthMetadata` in
+# src/auth/handler/handler.ts.
 
 curl -si -X POST https://<your-domain>/mcp \
   -H 'Content-Type: application/json' \
@@ -140,7 +188,81 @@ docker run --rm -p 3000:3000 \
   lark-mcp
 ```
 
+## 5. ChatGPT
+
+**ChatGPT cannot complete an OAuth flow against a custom connector.** It runs
+discovery, registers a client at `/register`, gets its 201, and then never opens
+an authorization window: `/authorize` is never requested, and no Connect or Sign
+in control appears anywhere in its UI. The connector reports "no actions found".
+
+This is not a fault in this server, and the cheap experiment that proves it is
+worth repeating before anyone spends time here again: add
+`https://mcp.linear.app/mcp` -- Linear's own server, an official ChatGPT
+connector -- as a *custom* connector with OAuth. It fails identically. Same
+symptom is open at
+[twentyhq/twenty#20296](https://github.com/twentyhq/twenty/issues/20296),
+reproduced there against Claude Code CLI too.
+
+Everything else about ChatGPT does work, after four fixes that are easy to
+regress. They live in `src/mcp-server/transport/streamable.ts`:
+
+- It posts JSON-RPC as `Content-Type: application/octet-stream`, which
+  `express.json()` declines to parse, so every request arrived with an empty
+  body and read as anonymous.
+- The SDK's transport then rejects that content type itself with 415, and
+  answers 406 unless `Accept` lists both `application/json` and
+  `text/event-stream`.
+- Rewriting `req.headers` does nothing: the SDK hands the raw Node request to
+  Hono, which builds its `Headers` from `rawHeaders`. Both have to be written.
+- **Never answer ChatGPT with HTTP 401.** Its opening probe is an empty POST and
+  it enumerates actions with `server/discover`, which is not in the MCP spec. A
+  401 to either is read as a verdict on the whole connector, surfaced as
+  `upstream_status: 401`, and it stops. `mcp.deepwiki.com`, which ChatGPT
+  connects to happily, answers those two with 400 and with 200-plus-JSON-RPC-error.
+  Refuse at the JSON-RPC layer, not the HTTP one.
+
+That last one is why auth is gated on a *denylist* of methods that carry
+identity (`tools/call`, `resources/read`, `prompts/get`, `completion/complete`)
+rather than an allowlist of safe ones. An allowlist fails closed against every
+method nobody thought of, and clients keep inventing them.
+
+### Connecting ChatGPT without OAuth
+
+Until OpenAI fixes the above, a person carries their own token:
+
+1. Open `https://<your-domain>/my-token` and sign in to Lark.
+2. Copy the URL the page gives back -- `https://<your-domain>/mcp/u/h_...`.
+3. In ChatGPT, create an app with that URL and set **Authentication: No Auth**.
+
+ChatGPT offers "Access token / API key" with Bearer and Custom Header schemes,
+but only ever collects the header *name*; the value is meant to arrive at the
+same later step that OAuth's Connect button is missing from. So the credential
+has to travel in the path. Make's MCP server ships the same shape for the same
+reason. A path segment is accepted where a query parameter gets flagged unsafe.
+
+The path segment is a **handle**, not the Lark token. A Lark `access_token`
+lasts about two hours; the refresh flow replaces it and deletes the old one, so
+a URL built around the token itself dies at the first refresh. A handle names
+whichever token currently belongs to it, `refreshToken` moves it onto the
+replacement before dropping the old, and `clearExpiredTokens` prunes handles
+whose token has gone. A leaked connector URL is also worth less than a leaked
+token: it means nothing anywhere but this server.
+
+**Every person needs their own app.** The handle is the identity, so a shared
+app means a shared identity, and everyone's queries run as whoever set it up.
+That is what OAuth would have fixed. Do not publish the app to the workspace.
+
+`/mcp` is unchanged and still prefers the `Authorization` header, so Claude and
+anything else that can complete OAuth is unaffected.
+
 ## Reading messages
+
+**The deployed configuration no longer exposes messages at all.** `LARK_TOOLS`
+and `LARK_OAUTH_SCOPES` were narrowed to docs, drive, wiki and calendar, because
+a ChatGPT connector cannot yet be shared without sharing one person's identity
+with it, and DMs are the wrong thing to have in that blast radius. The rest of
+this section is kept because it is what made messages work, and re-enabling them
+is a matter of putting the `im.*` tools and `im:*` scopes back.
 
 `LARK_OAUTH_SCOPES` is not cosmetic. Leaving it unset makes `LarkAuthHandler`
 select `LarkOIDC2OAuthServerProvider`, the legacy `authen/v1` flow, and the newer
@@ -178,9 +300,11 @@ call it without asking. Anything not `GET` and not named there stays a write.
 ## Constraints
 
 **Single replica.** `railway.toml` pins `numReplicas = 1`. `AuthStore` keeps
-tokens in one encrypted file plus an in-process cache, so a user who authorizes
-against one replica gets a 401 from any other. Scaling out means giving
-`AuthStore` a shared backend (Redis or Postgres) first.
+tokens, and the handle map behind every `/mcp/u/...` URL, in one encrypted file
+plus an in-process cache. A user who authorizes against one replica gets a 401
+from any other, and a connector URL issued by one resolves to nothing on the
+rest. Scaling out means giving `AuthStore` a shared backend (Redis or Postgres)
+first.
 
 **Shared permission ceiling is per-user, not per-app.** Each user's token is
 their own, so the server never sees more than that employee can. But anything an
