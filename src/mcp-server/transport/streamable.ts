@@ -124,46 +124,38 @@ export const initStreamableServer: InitTransportServerFunction = (
     }
   }
 
-  // Methods that describe the server rather than reach Lark with anybody's
-  // identity. Answering these without a token costs nothing -- the tool list is
-  // generated from static metadata and is the same for every user -- and it is
-  // what lets a client show what the server offers before asking anyone to sign
-  // in. ChatGPT registers an OAuth client, never opens an authorization window,
-  // and reports "no actions found"; unauthenticated it could at least see that
-  // there are 29 of them. Every method that actually calls Lark still needs a
-  // bearer, so this widens what can be read about the server, not what can be
-  // read through it.
-  const UNAUTHENTICATED_METHODS = new Set([
-    'initialize',
-    'notifications/initialized',
-    'ping',
-    'tools/list',
-    'prompts/list',
-    'resources/list',
-    'resources/templates/list',
+  // Only these reach Lark carrying somebody's identity. Everything else --
+  // initialize, the list methods, ping, and whatever a given client invents --
+  // describes the server, and the answer is the same whoever asks: the tool list
+  // is generated from static metadata. So the rule is a denylist, not an
+  // allowlist.
+  //
+  // It was an allowlist, and that is what kept breaking. ChatGPT enumerates a
+  // connector's actions with `server/discover`, which is not in the MCP spec and
+  // was not on any list I could have written in advance; it arrives from a second
+  // client, `openai-mcp/1.0.0`, after the `Python/3.13 aiohttp` one has finished
+  // discovery. It got a 401 and ChatGPT reported "no actions found". An allowlist
+  // fails closed against every method nobody thought of, and clients keep
+  // inventing them.
+  //
+  // mcp.deepwiki.com, which ChatGPT connects to without complaint, answers
+  // `server/discover` with HTTP 200 and a JSON-RPC error inside it. That is the
+  // shape that works: refuse at the JSON-RPC layer, not the HTTP one. A 401 is a
+  // verdict on the connector; a -32601 is a verdict on the request.
+  const METHODS_REQUIRING_IDENTITY = new Set([
+    'tools/call',
+    'resources/read',
+    'prompts/get',
+    'completion/complete',
   ]);
 
-  // A body carrying no method at all names nothing to protect, and answering it
-  // with 401 is what breaks ChatGPT: its first request to any MCP server is an
-  // empty POST, and it reads the 401 as the server's verdict on the whole
-  // connector rather than on that request. OpenAI reports it verbatim --
-  // `upstream_status: 401, developer_message: "Missing Authorization header"` --
-  // and gives up. mcp.deepwiki.com, which ChatGPT connects to happily, answers
-  // the same probe with 400.
-  //
-  // So let it through and leave the transport to reject it on its own terms,
-  // which is a 400 for a body that is not valid JSON-RPC. Nothing reaches Lark:
-  // a message with no method cannot invoke anything.
   const needsNoIdentity = (body: unknown): boolean => {
     const messages = Array.isArray(body) ? body : [body];
     return (
       messages.length > 0 &&
       messages.every((message) => {
         const method = (message as { method?: unknown } | null)?.method;
-        if (method === undefined || method === null) {
-          return true;
-        }
-        return typeof method === 'string' && UNAUTHENTICATED_METHODS.has(method);
+        return typeof method !== 'string' || !METHODS_REQUIRING_IDENTITY.has(method);
       })
     );
   };
