@@ -37,9 +37,23 @@ export const initStreamableServer: InitTransportServerFunction = (
   // client that abandoned it, which is exactly the case worth reading.
   app.use((req: Request, res: Response, next: NextFunction) => {
     res.on('finish', () => {
+      // The JSON-RPC method, on /mcp only. A client that posts something other
+      // than the method you assumed is indistinguishable from one that posts
+      // nothing, and both look like a bare 401 in a log that records only the
+      // path. Method names carry no user data; the params they arrive with are
+      // deliberately not logged.
+      const rpc =
+        req.path === '/mcp' && req.method === 'POST'
+          ? ` rpc=${JSON.stringify(
+              (Array.isArray(req.body) ? req.body : [req.body])
+                .map((message) => (message as { method?: unknown } | null)?.method ?? null)
+                .join(','),
+            )} ct=${JSON.stringify(req.headers['content-type'] ?? '')}`
+          : '';
       logger.info(
         `[http] ${req.method} ${req.originalUrl} -> ${res.statusCode}` +
           `${req.headers.authorization ? ' (bearer)' : ''}` +
+          `${rpc}` +
           ` ua=${JSON.stringify(req.headers['user-agent'] ?? '')}`,
       );
     });
