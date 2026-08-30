@@ -141,18 +141,31 @@ export class LarkMcpTool {
         ? 'Current user_access_token lacks required permissions. Please ensure the corresponding permissions are enabled in the developer console, then re-authorize using the following Authorization URL or login command.'
         : 'Current user_access_token is invalid or expired';
 
-    const instruction = authorizeUrl
-      ? [
-          'Please open the following URL in your browser to complete the authorization:',
-          `Note: Ensure the redirect URL (${this.auth?.callbackUrl}) is configured in your app's security settings.`,
-          `   If not configured, go to: ${this.options.domain}/app/${this.options.appId}/safe`,
-          'Authorization URL:',
-          authorizeUrl,
-          'This authorization link expires in 60 seconds. Generating a new link will immediately invalidate this one.',
-        ]
-          .join('\n')
-          .trim()
-      : '';
+    // The /my-token handout is a standing entry point, not a one-shot authorize
+    // URL: nothing about it expires in 60 seconds, there is no redirect_uri for
+    // the person to go and configure, and signing in there re-points the
+    // connector URL they already pasted into their client. Telling them
+    // otherwise is how they end up hunting for a setting that is already right.
+    const isHandout = authorizeUrl === this.auth?.tokenHandoutUrl;
+
+    const instruction = !authorizeUrl
+      ? ''
+      : isHandout
+        ? [
+            'Open this link in your browser and sign in to Lark again:',
+            authorizeUrl,
+            'Your existing connector URL keeps working afterwards -- there is nothing to re-paste or reconfigure.',
+          ].join('\n')
+        : [
+            'Please open the following URL in your browser to complete the authorization:',
+            `Note: Ensure the redirect URL (${this.auth?.callbackUrl}) is configured in your app's security settings.`,
+            `   If not configured, go to: ${this.options.domain}/app/${this.options.appId}/safe`,
+            'Authorization URL:',
+            authorizeUrl,
+            'This authorization link expires in 60 seconds. Generating a new link will immediately invalidate this one.',
+          ]
+            .join('\n')
+            .trim();
 
     const reAuthorizeMessage = {
       errorCode,
