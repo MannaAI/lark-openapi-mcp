@@ -37,6 +37,24 @@ export const initStreamableServer: InitTransportServerFunction = (
   // of what its headers claim. Rewrite them to describe what the body actually
   // is. Accept is added to, never replaced, so a client that already asked for
   // something specific keeps it.
+  // req.headers is not what the transport reads. It hands the raw Node request
+  // to Hono, which builds its own Headers from `rawHeaders` -- the flat
+  // [name, value, name, value] array off the socket -- so a header set only on
+  // req.headers is invisible to it. Both have to be written, or the rewrite logs
+  // a success and changes nothing.
+  const setHeader = (req: Request, name: string, value: string) => {
+    req.headers[name.toLowerCase()] = value;
+    const raw = req.rawHeaders;
+    const kept: string[] = [];
+    for (let i = 0; i < raw.length; i += 2) {
+      if (raw[i].toLowerCase() !== name.toLowerCase()) {
+        kept.push(raw[i], raw[i + 1]);
+      }
+    }
+    kept.push(name, value);
+    req.rawHeaders = kept;
+  };
+
   app.use('/mcp', (req: Request, _res: Response, next: NextFunction) => {
     if (req.method !== 'POST') {
       return next();
@@ -45,13 +63,13 @@ export const initStreamableServer: InitTransportServerFunction = (
     if (declared !== undefined && !/^application\/json\b/.test(declared)) {
       logger.info(`[http] /mcp: rewriting Content-Type ${JSON.stringify(declared)} to application/json`);
     }
-    req.headers['content-type'] = 'application/json';
+    setHeader(req, 'Content-Type', 'application/json');
 
     const accept = req.headers.accept ?? '';
     const missing = ['application/json', 'text/event-stream'].filter((type) => !accept.includes(type));
     if (missing.length) {
       logger.info(`[http] /mcp: Accept ${JSON.stringify(accept)} missing ${missing.join(', ')}`);
-      req.headers.accept = [accept, ...missing].filter(Boolean).join(', ');
+      setHeader(req, 'Accept', [accept, ...missing].filter(Boolean).join(', '));
     }
     next();
   });
