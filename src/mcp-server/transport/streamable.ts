@@ -197,9 +197,18 @@ export const initStreamableServer: InitTransportServerFunction = (
       .end(JSON.stringify({ jsonrpc: '2.0', error: { code: -32000, message: 'Method not allowed.' }, id: null }));
   };
 
-  app.get('/mcp', async (req: Request, res: Response) => {
+  // ChatGPT opens a connector by probing this with a GET -- openai/tunnel-client
+  // #35 calls it the "MCP SSE probe" and reports connector creation failing
+  // outright when it does not get an answer it likes. This transport is
+  // stateless, so it has no SSE stream to hand back and 405 is the spec's answer
+  // for that; but answering 405 to an anonymous probe says "this endpoint is
+  // broken" where the truth is "you have not signed in yet". mcp.linear.app and
+  // mcp.notion.com, both of which do OAuth in ChatGPT, answer this probe 401.
+  // So run it through auth first: an anonymous probe now gets a 401 carrying
+  // WWW-Authenticate, which is the pointer to the OAuth metadata, and only a
+  // caller that has authenticated sees the 405.
+  app.get('/mcp', authMiddleware, async (req: Request, res: Response) => {
     try {
-      console.log('Received GET MCP request');
       logger.info(`[StreamableServerTransport] Received GET MCP request`);
       await handleMethodNotAllowed(req, res);
     } catch (error) {
