@@ -3,6 +3,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { InitTransportServerFunction } from '../shared';
 import { parseMCPServerOptionsFromRequest, sendJsonRpcError } from './utils';
 import { LarkAuthHandler } from '../../auth';
+import { authStore } from '../../auth/store';
 import { logger } from '../../utils/logger';
 
 export const initStreamableServer: InitTransportServerFunction = (
@@ -216,7 +217,16 @@ export const initStreamableServer: InitTransportServerFunction = (
   // every hop in between, including Railway's. It is redacted from this server's
   // own logs below, which is the only one of those we control. Prefer the
   // Authorization header wherever the client can send one -- /mcp still takes it.
-  app.post('/mcp/u/:token', (req: Request, res: Response) => serveMcp(req, res, req.params.token));
+  app.post('/mcp/u/:token', async (req: Request, res: Response) => {
+    // The path segment is a handle: a stable name for a token that rotates
+    // underneath it. Resolving here rather than storing the Lark token in the
+    // URL is what keeps a connector working past the first refresh, roughly two
+    // hours in. A value that resolves to nothing is passed through untouched, so
+    // the raw-token URLs handed out before handles existed still work, and Lark
+    // gets the final say either way.
+    const resolved = await authStore.getHandleToken(req.params.token);
+    await serveMcp(req, res, resolved || req.params.token);
+  });
 
   const handleMethodNotAllowed = async (_req: Request, res: Response) => {
     res

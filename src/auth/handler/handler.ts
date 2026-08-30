@@ -362,11 +362,16 @@ export class LarkAuthHandler {
         codeVerifier,
         this.tokenHandoutRedirectUri,
       );
-      logger.info(`[LarkAuthHandler] my-token: handed out a token`);
-      // Shown once and never stored anywhere this page can reach it again. The
-      // exchange itself puts it in the token store, which is what makes it work
-      // as a bearer; there is no route that reads it back out.
-      res.send(this.tokenPage(undefined, token.access_token));
+      // The URL carries a handle, not the Lark token itself. Two reasons: the
+      // Lark token is replaced every couple of hours by the refresh flow, so a
+      // URL built around it would stop working, and a handle is worth nothing
+      // to anyone but this server -- a leaked connector URL cannot be replayed
+      // against Lark's API directly.
+      const handle = `h_${randomBytes(24).toString('base64url')}`;
+      await authStore.setHandle(handle, token.access_token);
+
+      logger.info(`[LarkAuthHandler] my-token: issued a connector handle`);
+      res.send(this.tokenPage(undefined, handle));
     } catch (error) {
       logger.error(`[LarkAuthHandler] my-token: exchange failed: ${error}`);
       res.status(400).send(this.tokenPage('Could not get a token from Lark. Start again at /my-token.'));
@@ -461,6 +466,12 @@ export class LarkAuthHandler {
 
     logger.info(`[LarkAuthHandler] refreshToken: Successfully refreshed token`);
 
+    // Before the old token goes, move any connector handle naming it onto the
+    // new one. A handle is the stable half of a URL somebody pasted into a
+    // client; if it is left pointing at a deleted token, that URL dies here.
+    if (newToken.access_token) {
+      await authStore.retargetHandles(accessToken, newToken.access_token);
+    }
     await authStore.removeToken(accessToken);
     return newToken;
   }

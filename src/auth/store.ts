@@ -126,8 +126,59 @@ export class AuthStore implements OAuthRegisteredClientsStore {
       }
     }
 
+    // A handle whose token is gone names nothing, and keeping it around only
+    // makes a dead connector URL look live.
+    if (this.storageDataCache.handles) {
+      for (const [handle, tokenKey] of Object.entries(this.storageDataCache.handles)) {
+        if (!this.storageDataCache.tokens[tokenKey]) {
+          delete this.storageDataCache.handles[handle];
+          hasExpiredTokens = true;
+        }
+      }
+    }
+
     if (hasExpiredTokens) {
       logger.info(`[AuthStore] Cleared expired tokens`);
+      await this.saveToStorage();
+    }
+  }
+
+  /** Point a stable handle at whichever access token currently belongs to it. */
+  async setHandle(handle: string, accessToken: string): Promise<void> {
+    await this.initialize();
+    if (!this.storageDataCache.handles) {
+      this.storageDataCache.handles = {};
+    }
+    this.storageDataCache.handles[handle] = accessToken;
+    await this.saveToStorage();
+  }
+
+  async getHandleToken(handle: string): Promise<string | undefined> {
+    await this.initialize();
+    return this.storageDataCache.handles?.[handle];
+  }
+
+  /**
+   * Follow every handle from a token that has just been refreshed to the token
+   * that replaced it. Without this the handle keeps naming a token that has been
+   * deleted, and the URL built around it stops working the first time it expires
+   * -- which is the whole failure this exists to prevent.
+   */
+  async retargetHandles(oldAccessToken: string, newAccessToken: string): Promise<void> {
+    await this.initialize();
+    const handles = this.storageDataCache.handles;
+    if (!handles) {
+      return;
+    }
+    let moved = 0;
+    for (const [handle, target] of Object.entries(handles)) {
+      if (target === oldAccessToken) {
+        handles[handle] = newAccessToken;
+        moved += 1;
+      }
+    }
+    if (moved) {
+      logger.info(`[AuthStore] Moved ${moved} handle(s) onto the refreshed token`);
       await this.saveToStorage();
     }
   }
