@@ -1,5 +1,7 @@
+import { randomBytes } from 'crypto';
 import { Express, Request, Response, NextFunction } from 'express';
 import { requireBearerAuth } from '@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js';
+import { OAuthClientInformationFull } from '@modelcontextprotocol/sdk/shared/auth.js';
 import { mcpAuthRouter, createOAuthMetadata } from '@modelcontextprotocol/sdk/server/auth/router.js';
 import { metadataHandler } from '@modelcontextprotocol/sdk/server/auth/handlers/metadata.js';
 import { LarkOIDC2OAuthServerProvider, LarkOAuth2OAuthServerProvider } from '../provider';
@@ -301,12 +303,129 @@ export class LarkAuthHandler {
     this.app.use('/.well-known/oauth-protected-resource', metadataHandler(protectedResourceMetadata));
 
     this.app.get('/callback', (req, res) => this.callback(req, res));
+
+    // Somewhere for a person to get their own Lark token, because the client
+    // that needs it cannot run the flow that would fetch it. Sign in to Lark,
+    // get your token back once, paste it into ChatGPT's "Access token / API key"
+    // field with the Bearer scheme. The token is the same one OAuth would have
+    // handed over; this only changes who carries it.
+    this.app.get('/my-token', (req, res) => this.startTokenHandout(req, res));
+    this.app.get('/my-token/done', (req, res) => this.finishTokenHandout(req, res));
   };
 
+  get tokenHandoutRedirectUri() {
+    return `${this.publicBaseUrl}/my-token/done`;
+  }
+
+  // Same client shape the OAuth flow builds for a registered client, so the
+  // provider redirects and exchanges exactly as it does for a real one.
+  private get tokenHandoutClient(): OAuthClientInformationFull {
+    return {
+      client_id: 'my-token',
+      redirect_uris: [this.tokenHandoutRedirectUri],
+    } as OAuthClientInformationFull;
+  }
+
+  protected async startTokenHandout(_req: Request, res: Response) {
+    const { codeVerifier, codeChallenge } = generatePKCEPair();
+    // The state is the lookup key for the verifier, so it has to be
+    // unguessable: anyone who could guess it could complete somebody else's
+    // half-finished sign-in.
+    const state = `my-token-${randomBytes(16).toString('hex')}`;
+    authStore.storeCodeVerifier(state, codeVerifier);
+
+    logger.info(`[LarkAuthHandler] my-token: starting sign-in`);
+    await this.provider.authorize(
+      this.tokenHandoutClient,
+      { codeChallenge, redirectUri: this.tokenHandoutRedirectUri, state, scopes: advertisedScopes() },
+      res,
+    );
+  }
+
+  protected async finishTokenHandout(req: Request, res: Response) {
+    const { code, state } = req.query;
+    if (typeof code !== 'string' || typeof state !== 'string') {
+      res.status(400).send(this.tokenPage('Sign-in did not complete. Start again at /my-token.'));
+      return;
+    }
+    const codeVerifier = authStore.getCodeVerifier(state);
+    if (!codeVerifier) {
+      res.status(400).send(this.tokenPage('That sign-in link has already been used, or expired. Start again at /my-token.'));
+      return;
+    }
+    authStore.removeCodeVerifier(state);
+
+    try {
+      const token = await this.provider.exchangeAuthorizationCode(
+        this.tokenHandoutClient,
+        code,
+        codeVerifier,
+        this.tokenHandoutRedirectUri,
+      );
+      logger.info(`[LarkAuthHandler] my-token: handed out a token`);
+      // Shown once and never stored anywhere this page can reach it again. The
+      // exchange itself puts it in the token store, which is what makes it work
+      // as a bearer; there is no route that reads it back out.
+      res.send(this.tokenPage(undefined, token.access_token));
+    } catch (error) {
+      logger.error(`[LarkAuthHandler] my-token: exchange failed: ${error}`);
+      res.status(400).send(this.tokenPage('Could not get a token from Lark. Start again at /my-token.'));
+    }
+  }
+
+  // No template engine in this project and no reason to add one for two pages.
+  private tokenPage(error?: string, token?: string): string {
+    const escape = (value: string) =>
+      value.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+    const body = error
+      ? `<p class="error">${escape(error)}</p>`
+      : `<p>Paste this into ChatGPT: <b>Authentication</b> → <b>Access token / API key</b>, header scheme <b>Bearer</b>.</p>
+         <textarea readonly rows="4" onclick="this.select()">${escape(token ?? '')}</textarea>
+         <p class="note">Shown once. It is your own Lark token: everything the connector does, it does as you.
+         Close this tab when you have copied it.</p>`;
+    return `<!doctype html><meta charset="utf-8"><title>Lark MCP token</title>
+<style>
+ body{font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;max-width:44rem;margin:4rem auto;padding:0 1.5rem}
+ textarea{width:100%;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;padding:.6rem;box-sizing:border-box}
+ .error{color:#b00020}.note{color:#666;font-size:13px}
+</style>
+<h1>Lark MCP token</h1>${body}`;
+  }
+
   authenticateRequest(req: Request, res: Response, next: NextFunction): void {
-    // Without this a 401 carries no pointer to the protected-resource metadata, so
-    // a client that discovers auth from the challenge (rather than by probing
-    // /.well-known) has nothing to follow.
+    // A bearer this server never minted is taken at face value and handed to
+    // Lark as a user_access_token. That is not a widening of trust: the token
+    // this server issues through OAuth *is* the caller's Lark user_access_token,
+    // so the only thing changing is who typed it in. Lark decides whether it is
+    // real, and every call stays scoped to whoever it belongs to.
+    //
+    // This exists because ChatGPT cannot complete an OAuth flow against a custom
+    // connector -- it registers a client and never opens an authorization window,
+    // and does the same against Linear's server, so it is not this one. Its
+    // "Access token / API key" option with the Bearer scheme can carry a token
+    // that was obtained elsewhere; /my-token is where a person gets theirs.
+    const bearer = req.headers.authorization?.match(/^Bearer\s+(.+)$/i)?.[1];
+    if (bearer) {
+      authStore
+        .getToken(bearer)
+        .then((known) => {
+          if (known) {
+            return this.requireBearer(req, res, next);
+          }
+          logger.info(`[LarkAuthHandler] accepting a bearer this server did not mint, as a Lark user token`);
+          req.auth = { token: bearer, clientId: 'lark-user-token', scopes: [] };
+          next();
+        })
+        .catch(() => this.requireBearer(req, res, next));
+      return;
+    }
+    this.requireBearer(req, res, next);
+  }
+
+  // Without the resourceMetadataUrl a 401 carries no pointer to the
+  // protected-resource metadata, so a client that discovers auth from the
+  // challenge rather than by probing /.well-known has nothing to follow.
+  protected requireBearer(req: Request, res: Response, next: NextFunction): void {
     requireBearerAuth({
       verifier: this.provider,
       requiredScopes: [],
