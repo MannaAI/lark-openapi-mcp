@@ -97,16 +97,21 @@ export const initStreamableServer: InitTransportServerFunction = (
       // nothing, and both look like a bare 401 in a log that records only the
       // path. Method names carry no user data; the params they arrive with are
       // deliberately not logged.
+      const isMcpPost = req.method === 'POST' && /^\/mcp(\/u\/|$)/.test(req.path);
       const rpc =
-        req.path === '/mcp' && req.method === 'POST'
+        isMcpPost
           ? ` rpc=${JSON.stringify(
               (Array.isArray(req.body) ? req.body : [req.body])
                 .map((message) => (message as { method?: unknown } | null)?.method ?? null)
                 .join(','),
             )} ct=${JSON.stringify(req.headers['content-type'] ?? '')}`
           : '';
+      // A token carried in the path must not be written down here. This is the
+      // one log in the chain this server controls; the rest of the hops are the
+      // reason the header is still the better option.
+      const url = req.originalUrl.replace(/(\/mcp\/u\/)[^/?]+/, '$1<redacted>');
       logger.info(
-        `[http] ${req.method} ${req.originalUrl} -> ${res.statusCode}` +
+        `[http] ${req.method} ${url} -> ${res.statusCode}` +
           `${req.headers.authorization ? ' (bearer)' : ''}` +
           `${rpc}` +
           ` ua=${JSON.stringify(req.headers['user-agent'] ?? '')}`,
@@ -182,8 +187,8 @@ export const initStreamableServer: InitTransportServerFunction = (
     }
   };
 
-  app.post('/mcp', authMiddleware, async (req: Request, res: Response) => {
-    const token = req.auth?.token;
+  const serveMcp = async (req: Request, res: Response, pathToken?: string) => {
+    const token = pathToken || req.auth?.token;
     const { data } = parseMCPServerOptionsFromRequest(req);
     const server = getNewServer({ ...options, ...data, userAccessToken: data.userAccessToken || token }, authHandler);
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
@@ -194,7 +199,24 @@ export const initStreamableServer: InitTransportServerFunction = (
 
     await server.connect(transport);
     await transport.handleRequest(req, res, req.body);
-  });
+  };
+
+  app.post('/mcp', authMiddleware, (req: Request, res: Response) => serveMcp(req, res));
+
+  // The token in the path, because ChatGPT has nowhere to type one. Its connector
+  // dialog offers "Access token / API key", but only collects the header *name*
+  // -- the value is meant to arrive through a later step that never appears, the
+  // same step OAuth's Connect button is missing. Make's MCP server ships exactly
+  // this shape for the same reason (`/mcp/u/<token>/stateless`, paired with
+  // Authentication: No Auth), and a path segment is accepted where a query
+  // parameter gets flagged as unsafe.
+  //
+  // The cost is real and worth being plain about: a URL is not a header. This
+  // token sits in ChatGPT's saved connector config and in the access logs of
+  // every hop in between, including Railway's. It is redacted from this server's
+  // own logs below, which is the only one of those we control. Prefer the
+  // Authorization header wherever the client can send one -- /mcp still takes it.
+  app.post('/mcp/u/:token', (req: Request, res: Response) => serveMcp(req, res, req.params.token));
 
   const handleMethodNotAllowed = async (_req: Request, res: Response) => {
     res
@@ -215,6 +237,16 @@ export const initStreamableServer: InitTransportServerFunction = (
   app.get('/mcp', authMiddleware, async (req: Request, res: Response) => {
     try {
       logger.info(`[StreamableServerTransport] Received GET MCP request`);
+      await handleMethodNotAllowed(req, res);
+    } catch (error) {
+      sendJsonRpcError(res, error as Error);
+    }
+  });
+
+  // Same probe, same answer. The token in the path is the credential, so there is
+  // nothing to challenge for and 405 is the honest reply.
+  app.get('/mcp/u/:token', async (req: Request, res: Response) => {
+    try {
       await handleMethodNotAllowed(req, res);
     } catch (error) {
       sendJsonRpcError(res, error as Error);
