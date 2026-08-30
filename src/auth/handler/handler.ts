@@ -1,7 +1,7 @@
 import { randomBytes } from 'crypto';
 import { Express, Request, Response, NextFunction } from 'express';
 import { requireBearerAuth } from '@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js';
-import { OAuthClientInformationFull } from '@modelcontextprotocol/sdk/shared/auth.js';
+import { OAuthClientInformationFull, OAuthTokens } from '@modelcontextprotocol/sdk/shared/auth.js';
 import { mcpAuthRouter, createOAuthMetadata } from '@modelcontextprotocol/sdk/server/auth/router.js';
 import { metadataHandler } from '@modelcontextprotocol/sdk/server/auth/handlers/metadata.js';
 import { LarkOIDC2OAuthServerProvider, LarkOAuth2OAuthServerProvider } from '../provider';
@@ -23,6 +23,26 @@ const SUPPORTED_CLIENT_AUTH_METHODS = ['client_secret_post', 'none'];
 // `token_endpoint_auth_method: private_key_jwt`, and a client that reads this
 // list before it authorizes has no reason to start a flow it cannot finish.
 const ADVERTISED_CLIENT_AUTH_METHODS = [...SUPPORTED_CLIENT_AUTH_METHODS, 'private_key_jwt'];
+
+// The client_id the /my-token handout signs in under. It is a shape built
+// inline for the provider, never registered in the clients store, so /authorize
+// answers 400 invalid_client for it -- see reAuthorize below, which is where
+// that mattered.
+const TOKEN_HANDOUT_CLIENT_ID = 'my-token';
+
+// Remembers which connector handle this browser was last given, so signing in
+// again re-points that handle instead of minting a new one. The handle is the
+// stable half of a URL somebody has already pasted into ChatGPT; a new one
+// means a URL nobody knows to go and update.
+const HANDLE_COOKIE = 'lark_mcp_handle';
+
+// One cookie, read once. cookie-parser would be a dependency for this line.
+const readCookie = (req: Request, name: string): string | undefined =>
+  req.headers.cookie
+    ?.split(';')
+    .map((part) => part.trim())
+    .find((part) => part.startsWith(`${name}=`))
+    ?.slice(name.length + 1);
 
 export interface LarkOAuthClientConfig {
   port: number;
@@ -313,6 +333,10 @@ export class LarkAuthHandler {
     this.app.get('/my-token/done', (req, res) => this.finishTokenHandout(req, res));
   };
 
+  get tokenHandoutUrl() {
+    return `${this.publicBaseUrl}/my-token`;
+  }
+
   get tokenHandoutRedirectUri() {
     return `${this.publicBaseUrl}/my-token/done`;
   }
@@ -321,7 +345,7 @@ export class LarkAuthHandler {
   // provider redirects and exchanges exactly as it does for a real one.
   private get tokenHandoutClient(): OAuthClientInformationFull {
     return {
-      client_id: 'my-token',
+      client_id: TOKEN_HANDOUT_CLIENT_ID,
       redirect_uris: [this.tokenHandoutRedirectUri],
     } as OAuthClientInformationFull;
   }
@@ -367,19 +391,40 @@ export class LarkAuthHandler {
       // URL built around it would stop working, and a handle is worth nothing
       // to anyone but this server -- a leaked connector URL cannot be replayed
       // against Lark's API directly.
-      const handle = `h_${randomBytes(24).toString('base64url')}`;
+      // Reuse the handle this browser was handed last time. A Lark token dies
+      // every couple of hours and the refresh chain can break; when it does the
+      // only repair is signing in here again, and that has to fix the URL the
+      // person already pasted into ChatGPT rather than replace it. Falls back to
+      // a fresh handle for a first sign-in, another browser, or one the store no
+      // longer knows.
+      const previous = readCookie(req, HANDLE_COOKIE);
+      const reused = previous && (await authStore.getHandleToken(previous)) ? previous : undefined;
+      const handle = reused ?? `h_${randomBytes(24).toString('base64url')}`;
       await authStore.setHandle(handle, token.access_token);
+      this.setHandleCookie(res, handle);
 
-      logger.info(`[LarkAuthHandler] my-token: issued a connector handle`);
-      res.send(this.tokenPage(undefined, handle));
+      logger.info(`[LarkAuthHandler] my-token: ${reused ? 're-pointed an existing' : 'issued a'} connector handle`);
+      res.send(this.tokenPage(undefined, handle, Boolean(reused)));
     } catch (error) {
       logger.error(`[LarkAuthHandler] my-token: exchange failed: ${error}`);
       res.status(400).send(this.tokenPage('Could not get a token from Lark. Start again at /my-token.'));
     }
   }
 
+  // The handle is the credential, so: HttpOnly, and scoped to the handout path
+  // rather than sent to /mcp with every call. Secure only over https -- the
+  // local `lark-mcp login` flow runs on plain http, where a Secure cookie is
+  // dropped without a word. 400 days is the cap browsers apply to Max-Age.
+  private setHandleCookie(res: Response, handle: string) {
+    const secure = this.publicBaseUrl.startsWith('https://') ? '; Secure' : '';
+    res.setHeader(
+      'Set-Cookie',
+      `${HANDLE_COOKIE}=${handle}; Max-Age=34560000; Path=/my-token; HttpOnly; SameSite=Lax${secure}`,
+    );
+  }
+
   // No template engine in this project and no reason to add one for two pages.
-  private tokenPage(error?: string, token?: string): string {
+  private tokenPage(error?: string, token?: string, reused = false): string {
     const escape = (value: string) =>
       value.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
     // The finished URL rather than the token on its own, because assembling it by
@@ -393,9 +438,9 @@ export class LarkAuthHandler {
          <textarea readonly rows="3" onclick="this.select()">${escape(connectorUrl)}</textarea>
          <h2>Authentication</h2>
          <p><b>No Auth</b> — your token is already in the URL above.</p>
-         <p class="note">Shown once. This URL contains your own Lark token, so treat it like a password:
-         anything the connector does, it does as you, and only what you can already see.
-         Everyone needs their own — do not share this one.</p>`;
+         <p class="note">${reused ? 'Same URL as last time, on purpose &mdash; whatever you pasted into ChatGPT is working again, so there is nothing to update there.' : 'Keep this URL. Signing in here again gives you this same one back, so you only paste it into ChatGPT once.'}
+         Treat it like a password: anything the connector does, it does as you, and only what you can already see.
+         Everyone needs their own &mdash; do not share this one.</p>`;
     return `<!doctype html><meta charset="utf-8"><title>Lark MCP token</title>
 <style>
  body{font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;max-width:44rem;margin:4rem auto;padding:0 1.5rem}
@@ -447,7 +492,32 @@ export class LarkAuthHandler {
     })(req, res, next);
   }
 
-  async refreshToken(accessToken: string) {
+  // Lark's refresh_token is single-use and kills its predecessor the moment it is
+  // spent, so two calls that find the same token expired must not both go and
+  // spend it: one wins, the other is told "refresh token is invalid" and passes
+  // that on to the person as a demand to sign in again, seconds after a refresh
+  // that worked perfectly. Clients do issue tool calls in parallel. One refresh
+  // per token, everyone else waits on it and gets the same answer.
+  //
+  // In-process is enough while numReplicas stays 1, which railway.toml pins for
+  // the same reason the token store does. A second replica needs this alongside
+  // the store, not here.
+  private readonly refreshesInFlight = new Map<string, Promise<OAuthTokens>>();
+
+  async refreshToken(accessToken: string): Promise<OAuthTokens> {
+    const inFlight = this.refreshesInFlight.get(accessToken);
+    if (inFlight) {
+      logger.info(`[LarkAuthHandler] refreshToken: joining a refresh already in flight`);
+      return inFlight;
+    }
+    const refresh = this.exchangeStoredRefreshToken(accessToken).finally(() => {
+      this.refreshesInFlight.delete(accessToken);
+    });
+    this.refreshesInFlight.set(accessToken, refresh);
+    return refresh;
+  }
+
+  private async exchangeStoredRefreshToken(accessToken: string): Promise<OAuthTokens> {
     const token = await authStore.getToken(accessToken);
     if (!token) {
       logger.error(`[LarkAuthHandler] refreshToken: No local access token found`);
@@ -489,6 +559,16 @@ export class LarkAuthHandler {
     }
 
     const { clientId } = token;
+
+    // A token from the /my-token handout has no registered client behind it, so
+    // the /authorize URL below is answered 400 invalid_client -- the link ChatGPT
+    // shows the person when their token dies has never once worked. Send them to
+    // the handout instead, which is the only flow that can reissue this
+    // credential, and which now re-points their existing connector URL rather
+    // than handing out a new one to paste.
+    if (clientId === TOKEN_HANDOUT_CLIENT_ID) {
+      return { accessToken: '', authorizeUrl: this.tokenHandoutUrl };
+    }
 
     const { codeVerifier, codeChallenge } = generatePKCEPair();
 

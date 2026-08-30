@@ -5,6 +5,7 @@ import { AuthorizationParams, OAuthServerProvider } from '@modelcontextprotocol/
 import { AuthInfo } from '@modelcontextprotocol/sdk/server/auth/types.js';
 import { authStore } from '../store';
 import { isTokenValid } from '../utils/is-token-valid';
+import { withRefreshScope } from '../config';
 import { LarkProxyOAuthServerProviderOptions, OAUTH2_FLOW } from './types';
 import { commonHttpInstance } from '../../utils/http-instance';
 import { logger } from '../../utils/logger';
@@ -148,8 +149,16 @@ export class LarkOAuth2OAuthServerProvider implements OAuthServerProvider {
       refresh_token: refreshToken,
     };
 
-    if (scopes?.length) {
-      params.scope = scopes.join(' ');
+    // The scopes recorded on a token are the ones Lark echoed back, not the ones
+    // that were asked for, and they are what gets sent here. So an authorization
+    // that requested offline_access still renews without it if Lark left it out
+    // of the response -- the refreshed token then arrives with no refresh token
+    // of its own and the chain dies at the second expiry rather than the first.
+    // Put it back on the way out. It is legal to ask for: every authorization
+    // this server starts includes it, so it is part of the original grant.
+    const refreshScopes = withRefreshScope(scopes);
+    if (refreshScopes?.length) {
+      params.scope = refreshScopes.join(' ');
     }
     try {
       logger.info(`[LarkOAuth2OAuthServerProvider] Refreshing token for client ${client.client_id}; appId: ${appId}`);

@@ -95,6 +95,25 @@ names came from `larksuite/cli`'s own registry
 (`internal/registry/scope_priorities.json`), not from the published reference,
 which contradicts the product often enough to be worth distrusting.
 
+`offline_access` is not in that list because the server adds it itself
+(`advertisedScopes()`), but it still has to be **enabled on the app** under
+Permission Management, and it is the one scope whose absence does not look like a
+scope problem. Lark returns a `refresh_token` only when `offline_access` was
+granted, and only includes one in a refresh response when the request's `scope`
+carries it. Without it every user token simply stops working two hours after
+sign-in, and the client reports "user authorization is expired/invalid" -- there
+is no permission error anywhere. The check is one deploy-log line:
+
+```
+Successfully exchanged authorization code for client my-token; ... refreshToken: true
+```
+
+`false` there means the app does not have the permission, whatever the code asked
+for. Lark also makes `refresh_token` single-use and invalidates the previous one
+immediately, which is why `LarkAuthHandler.refreshToken` allows only one refresh
+in flight per token -- parallel tool calls otherwise race to spend the same one
+and the loser reports a dead session moments after a refresh that worked.
+
 **Do not set `USER_ACCESS_TOKEN`.** The transport only starts the OAuth flow when
 no static token is configured (`src/mcp-server/transport/streamable.ts`), so
 setting it silently turns every user into one shared service account.
