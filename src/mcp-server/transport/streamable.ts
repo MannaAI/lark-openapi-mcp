@@ -30,6 +30,32 @@ export const initStreamableServer: InitTransportServerFunction = (
   // so the form-encoded bodies the token endpoint takes are untouched.
   app.use('/mcp', express.json({ type: () => true }));
 
+  // Parsing the body is only half of it: the SDK's transport checks the headers
+  // itself and answers 415 for a Content-Type that is not application/json, and
+  // 406 unless Accept lists both application/json and text/event-stream. So a
+  // request that has been read perfectly well still gets refused on the strength
+  // of what its headers claim. Rewrite them to describe what the body actually
+  // is. Accept is added to, never replaced, so a client that already asked for
+  // something specific keeps it.
+  app.use('/mcp', (req: Request, _res: Response, next: NextFunction) => {
+    if (req.method !== 'POST') {
+      return next();
+    }
+    const declared = req.headers['content-type'];
+    if (declared !== undefined && !/^application\/json\b/.test(declared)) {
+      logger.info(`[http] /mcp: rewriting Content-Type ${JSON.stringify(declared)} to application/json`);
+    }
+    req.headers['content-type'] = 'application/json';
+
+    const accept = req.headers.accept ?? '';
+    const missing = ['application/json', 'text/event-stream'].filter((type) => !accept.includes(type));
+    if (missing.length) {
+      logger.info(`[http] /mcp: Accept ${JSON.stringify(accept)} missing ${missing.join(', ')}`);
+      req.headers.accept = [accept, ...missing].filter(Boolean).join(', ');
+    }
+    next();
+  });
+
   // Behind a TLS terminator (Railway, any reverse proxy) the real client IP only
   // exists in X-Forwarded-For. Without this the SDK's auth router rate-limits
   // every user under the proxy's single IP -- one shared bucket, so a handful of
