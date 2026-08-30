@@ -377,16 +377,25 @@ export class LarkAuthHandler {
   private tokenPage(error?: string, token?: string): string {
     const escape = (value: string) =>
       value.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+    // The finished URL rather than the token on its own, because assembling it by
+    // hand is the step people get wrong, and ChatGPT gives you nowhere to type a
+    // token anyway -- it has to travel in the path.
+    const connectorUrl = `${this.publicBaseUrl}/mcp/u/${token ?? ''}`;
     const body = error
       ? `<p class="error">${escape(error)}</p>`
-      : `<p>Paste this into ChatGPT: <b>Authentication</b> → <b>Access token / API key</b>, header scheme <b>Bearer</b>.</p>
-         <textarea readonly rows="4" onclick="this.select()">${escape(token ?? '')}</textarea>
-         <p class="note">Shown once. It is your own Lark token: everything the connector does, it does as you.
-         Close this tab when you have copied it.</p>`;
+      : `<p>In ChatGPT, create a new app and use these two settings.</p>
+         <h2>Server URL</h2>
+         <textarea readonly rows="3" onclick="this.select()">${escape(connectorUrl)}</textarea>
+         <h2>Authentication</h2>
+         <p><b>No Auth</b> — your token is already in the URL above.</p>
+         <p class="note">Shown once. This URL contains your own Lark token, so treat it like a password:
+         anything the connector does, it does as you, and only what you can already see.
+         Everyone needs their own — do not share this one.</p>`;
     return `<!doctype html><meta charset="utf-8"><title>Lark MCP token</title>
 <style>
  body{font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;max-width:44rem;margin:4rem auto;padding:0 1.5rem}
  textarea{width:100%;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;padding:.6rem;box-sizing:border-box}
+ h2{font-size:14px;text-transform:uppercase;letter-spacing:.04em;color:#666;margin:1.6rem 0 .4rem}
  .error{color:#b00020}.note{color:#666;font-size:13px}
 </style>
 <h1>Lark MCP token</h1>${body}`;
