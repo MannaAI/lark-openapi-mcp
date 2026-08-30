@@ -19,6 +19,17 @@ export const initStreamableServer: InitTransportServerFunction = (
   const app = express();
   app.use(express.json());
 
+  // ChatGPT posts JSON-RPC to /mcp as `Content-Type: application/octet-stream`.
+  // express.json() goes by content type, so the body was never parsed: every
+  // request arrived with req.body {} and no method, which read here as an
+  // anonymous request with nothing in it and came back 401. That is the whole
+  // failure -- ChatGPT registered an OAuth client, was told 401 anyway, and had
+  // no actions to show. Parse whatever /mcp receives as JSON regardless of what
+  // the header claims. body-parser marks a request it has already handled, so
+  // this only picks up what the parser above declined, and it is scoped to /mcp
+  // so the form-encoded bodies the token endpoint takes are untouched.
+  app.use('/mcp', express.json({ type: () => true }));
+
   // Behind a TLS terminator (Railway, any reverse proxy) the real client IP only
   // exists in X-Forwarded-For. Without this the SDK's auth router rate-limits
   // every user under the proxy's single IP -- one shared bucket, so a handful of
