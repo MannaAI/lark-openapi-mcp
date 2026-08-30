@@ -143,12 +143,26 @@ export const initStreamableServer: InitTransportServerFunction = (
     'resources/templates/list',
   ]);
 
-  const isDiscoveryOnly = (body: unknown): boolean => {
+  // A body carrying no method at all names nothing to protect, and answering it
+  // with 401 is what breaks ChatGPT: its first request to any MCP server is an
+  // empty POST, and it reads the 401 as the server's verdict on the whole
+  // connector rather than on that request. OpenAI reports it verbatim --
+  // `upstream_status: 401, developer_message: "Missing Authorization header"` --
+  // and gives up. mcp.deepwiki.com, which ChatGPT connects to happily, answers
+  // the same probe with 400.
+  //
+  // So let it through and leave the transport to reject it on its own terms,
+  // which is a 400 for a body that is not valid JSON-RPC. Nothing reaches Lark:
+  // a message with no method cannot invoke anything.
+  const needsNoIdentity = (body: unknown): boolean => {
     const messages = Array.isArray(body) ? body : [body];
     return (
       messages.length > 0 &&
       messages.every((message) => {
         const method = (message as { method?: unknown } | null)?.method;
+        if (method === undefined || method === null) {
+          return true;
+        }
         return typeof method === 'string' && UNAUTHENTICATED_METHODS.has(method);
       })
     );
@@ -158,7 +172,7 @@ export const initStreamableServer: InitTransportServerFunction = (
     if (authHandler && oauth) {
       // A bearer is still honoured when one is sent -- this only stops the
       // request being rejected when one is not.
-      if (!req.headers.authorization && isDiscoveryOnly(req.body)) {
+      if (!req.headers.authorization && needsNoIdentity(req.body)) {
         return next();
       }
       authHandler.authenticateRequest(req, res, next);
