@@ -17,11 +17,8 @@ type Filter = Record<string, unknown>;
 // search meaningless and vice versa. With neither, both halves are sent, which
 // is the whole point of this endpoint over the legacy docs-only search.
 //
-// ponytail: the doc_filter/wiki_filter envelope follows larksuite/cli's
-// documented flag mapping (skills/lark-drive/references/lark-drive-search.md)
-// and has not been fired at a live tenant -- the app is missing search:docs:read,
-// so every probe stops at 99991672 before the body is ever parsed. If the shape
-// is wrong Lark answers with a field validation error naming the field.
+// Envelope confirmed against a live tenant on 2026-08-31: this body answers
+// code 0, and a lowercase doc_types answers 99992402 naming the field.
 const buildBody = (params: any) => {
   const { query, page_size, page_token, folder_tokens, space_ids, ...rest } = params.data;
 
@@ -70,8 +67,26 @@ export const larkDriveBuiltinSearchTool: McpTool = {
           'Search keyword, at most 30 characters. Supports intitle:, quoted phrases, OR and -. Pass an empty string to browse by filters alone.',
         ),
       doc_types: z
-        .array(z.enum(['doc', 'docx', 'sheet', 'bitable', 'mindnote', 'file', 'wiki', 'folder', 'slides', 'shortcut']))
-        .describe('Restrict to these object types. Modern Lark documents are docx, and wiki pages are wiki.')
+        .array(
+          // Lark rejects a lowercase value here with 99992402, naming these as
+          // the options -- they are not case-insensitive.
+          z.enum([
+            'DOC',
+            'DOCX',
+            'SHEET',
+            'BITABLE',
+            'MINDNOTE',
+            'FILE',
+            'WIKI',
+            'FOLDER',
+            'CATALOG',
+            'SLIDES',
+            'SHORTCUT',
+          ]),
+        )
+        .describe(
+          'Restrict to these object types, uppercase. Modern Lark documents are DOCX, and wiki pages are WIKI.',
+        )
         .optional(),
       creator_ids: z
         .array(z.string())
