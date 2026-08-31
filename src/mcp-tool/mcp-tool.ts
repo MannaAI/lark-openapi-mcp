@@ -136,10 +136,23 @@ export class LarkMcpTool {
   }
 
   getReAuthorizeMessage(authorizeUrl?: string, errorCode?: number, errorText?: string) {
-    const errorMessage =
-      errorCode === OAPI_MCP_ERROR_CODE.USER_ACCESS_TOKEN_UNAUTHORIZED
-        ? 'Current user_access_token lacks required permissions. Please ensure the corresponding permissions are enabled in the developer console, then re-authorize using the following Authorization URL or login command.'
-        : 'Current user_access_token is invalid or expired';
+    // A missing scope and an expired token are the same shape of failure here --
+    // both arrive as isError with a code -- and they have opposite remedies. The
+    // old text ran them together: it mentioned the developer console and then
+    // handed over an authorization link, and a client reading it does the thing
+    // with the link in it. Signing in again cannot grant a permission the app was
+    // never given, so that loop runs forever, which is what it did.
+    //
+    // Lark names the scopes it wanted in the error itself -- "Access denied. One
+    // of the following scopes is required: [...]" -- and that string is already
+    // being passed through as rawErrorText. Say so, and put the console first.
+    const isMissingScope = errorCode === OAPI_MCP_ERROR_CODE.USER_ACCESS_TOKEN_UNAUTHORIZED;
+    const errorMessage = isMissingScope
+      ? 'This user_access_token is valid, but the app has not been granted a scope this API requires. ' +
+        'Lark lists the accepted scopes in rawErrorText below. Signing in again will NOT fix this on its own: ' +
+        'the scope has to be added to the app in the Lark developer console under Permissions & Scopes and a new ' +
+        'version published, and only then does re-authorizing pick it up.'
+      : 'Current user_access_token is invalid or expired';
 
     // The /my-token handout is a standing entry point, not a one-shot authorize
     // URL: nothing about it expires in 60 seconds, there is no redirect_uri for
@@ -150,7 +163,15 @@ export class LarkMcpTool {
 
     const instruction = !authorizeUrl
       ? ''
-      : isHandout
+      : isMissingScope
+        ? [
+            'Do this first, in order. The link alone will not help:',
+            '1. Add the scope named in rawErrorText to the app in the Lark developer console (Permissions & Scopes, User token scopes).',
+            '2. Publish a new version of the app and have it approved.',
+            '3. Only then sign in again here:',
+            authorizeUrl,
+          ].join('\n')
+        : isHandout
         ? [
             'Open this link in your browser and sign in to Lark again:',
             authorizeUrl,
