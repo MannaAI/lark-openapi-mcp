@@ -83,11 +83,29 @@ calendar.v4.freebusy.list,contact.v3.user.get,contact.v3.user.batch
 `LARK_OAUTH_SCOPES` to match:
 
 ```
-docx:document drive:drive wiki:wiki calendar:calendar
+docx:document drive:drive wiki:wiki
+calendar:calendar calendar:calendar:readonly
 calendar:calendar.event:read calendar:calendar.event:create
 calendar:calendar.event:update calendar:calendar.event:delete
 calendar:calendar.free_busy:read
+contact:contact.base:readonly contact:user.base:readonly
+contact:user.employee_id:readonly
 ```
+
+`calendar:calendar:readonly` is not redundant with `calendar:calendar`, however
+much the names suggest it. Lark is moving calendar off the coarse scope one
+endpoint at a time, and `calendar/v4/calendars/primary` has already gone: it
+accepts `calendar:calendar:read` or `calendar:calendar:readonly` and nothing
+else, while `calendars/list` and `calendar_events/list` next to it still take
+`calendar:calendar`. So the neighbours work and one call answers `99991679`,
+which reads as a broken token rather than a missing permission. Check the
+per-endpoint list in the reference before assuming a family shares a scope.
+
+The `contact:*` entries are there because `LARK_TOOLS` enables
+`contact.v3.user.get` and `contact.v3.user.batch`, which had no scope at all --
+and because calendar responses carry a `user_id` that Lark treats as sensitive
+and gates behind `contact:user.employee_id:readonly` separately from the calendar
+scopes themselves.
 
 The same permissions have to be granted to the Lark app itself and the version
 published, or the calendar tools fail no matter what is advertised here. Scope
