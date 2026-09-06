@@ -77,7 +77,8 @@ calendar.v4.calendarEvent.get,calendar.v4.calendarEvent.search,
 calendar.v4.calendarEvent.instances,calendar.v4.calendarEvent.create,
 calendar.v4.calendarEvent.patch,calendar.v4.calendarEvent.delete,
 calendar.v4.calendarEventAttendee.list,calendar.v4.calendarEventAttendee.create,
-calendar.v4.freebusy.list,contact.v3.user.get,contact.v3.user.batch
+calendar.v4.freebusy.list,contact.v3.user.get,contact.v3.user.batch,
+sheets.builtin.read,sheets.v3.spreadsheet.get,sheets.v3.spreadsheetSheet.query
 ```
 
 `LARK_OAUTH_SCOPES` to match:
@@ -321,6 +322,41 @@ capability on the Lark app -- they answer `232025 Bot ability is not activated`
 without it, even on a user token. `im.builtin.messageSearch` and
 `im.v1.chatMembers.get` do not, so message search works without ever enabling a
 bot.
+
+## Spreadsheets
+
+Cell values were never migrated to sheets v3. That version covers the workbook
+and the tabs inside it -- create, patch, list, move, filters, filter views,
+float images, find and replace -- and `find` answers with cell *coordinates*,
+not content. Reading a range is still `GET
+/open-apis/sheets/v2/spreadsheets/:token/values_batch_get`, which upstream's
+codegen does not generate, so it lives here as the `sheets.builtin.read`
+builtin. Registering more v3 tools would not have produced a way to read a
+spreadsheet.
+
+Three tools cover it: `sheets.builtin.read` for values,
+`sheets.v3.spreadsheetSheet.query` to list a workbook's tabs, and
+`sheets.v3.spreadsheet.get` for its properties. A tab's id is the `?sheet=`
+parameter in the spreadsheet URL, so a pasted link is usually enough to read
+from without listing anything first. A spreadsheet inside a wiki needs
+`wiki.v2.space.getNode` first, to turn the node token into the `obj_token` the
+sheets endpoints want.
+
+Ranges are capped at 200 rows each by default and report `truncated` with the
+real total rather than trimming silently -- a data dictionary of a few thousand
+rows otherwise arrives as one JSON array that costs more than the context it is
+being read into.
+
+**Scopes are unresolved on purpose.** The v2 endpoints predate Lark's granular
+scopes and may still ride on `drive:drive`, which every existing token already
+carries; if so nothing needs granting and nobody re-authorizes. If a call
+answers `99991679`, the error body names the scopes it will accept -- expect
+`sheets:spreadsheet:read` (what `larksuite/cli` asks for), possibly alongside
+the coarse `sheets:spreadsheet` or the legacy `sheets:spreadsheet:readonly`,
+since sheets is mid-migration the way calendar is. Grant in the Lark console
+first, then add to `LARK_OAUTH_SCOPES`; the reverse order asks for a scope the
+app does not hold and can break authorization for everyone at once. Every user
+re-authorizes after that -- an existing token does not gain a scope.
 
 ## Read-only vs write tools
 
