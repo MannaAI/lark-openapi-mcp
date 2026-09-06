@@ -62,17 +62,19 @@ to memory -- tokens then survive until the next restart and no further.
 | `TRUST_PROXY` | `1` | Already set in the image. Without it the SDK's auth router rate-limits every user under the proxy's single IP. |
 | `LARK_OAUTH_SCOPES` | see below | Space-separated. Must be non-empty, or the server falls back to the legacy `authen/v1` flow. |
 
-`LARK_TOOLS` as deployed -- docs, drive, wiki and calendar, read and write:
+`LARK_TOOLS` as deployed -- docs, drive, wiki, sheets and calendar, read and
+write:
 
 ```
-docx.builtin.search,docx.builtin.import,docx.v1.document.get,
+drive.builtin.search,docx.builtin.search,docx.builtin.import,docx.v1.document.get,
 docx.v1.document.rawContent,docx.v1.document.create,docx.v1.documentBlock.list,
 docx.v1.documentBlock.patch,docx.v1.documentBlock.batchUpdate,
 docx.v1.documentBlockChildren.create,docx.v1.documentBlockChildren.batchDelete,
 docx.v1.documentBlockDescendant.create,drive.v1.file.list,
-drive.v1.file.createFolder,drive.v1.meta.batchQuery,wiki.v2.space.list,
-wiki.v2.space.getNode,wiki.v2.spaceNode.list,calendar.v4.calendar.list,
-calendar.v4.calendar.primary,calendar.v4.calendarEvent.list,
+drive.v1.file.createFolder,drive.v1.meta.batchQuery,wiki.v1.node.search,
+wiki.v2.space.list,wiki.v2.space.getNode,wiki.v2.spaceNode.list,
+calendar.v4.calendar.list,calendar.v4.calendar.primary,
+calendar.v4.calendarEvent.list,
 calendar.v4.calendarEvent.get,calendar.v4.calendarEvent.search,
 calendar.v4.calendarEvent.instances,calendar.v4.calendarEvent.create,
 calendar.v4.calendarEvent.patch,calendar.v4.calendarEvent.delete,
@@ -347,16 +349,20 @@ real total rather than trimming silently -- a data dictionary of a few thousand
 rows otherwise arrives as one JSON array that costs more than the context it is
 being read into.
 
-**Scopes are unresolved on purpose.** The v2 endpoints predate Lark's granular
-scopes and may still ride on `drive:drive`, which every existing token already
-carries; if so nothing needs granting and nobody re-authorizes. If a call
-answers `99991679`, the error body names the scopes it will accept -- expect
-`sheets:spreadsheet:read` (what `larksuite/cli` asks for), possibly alongside
-the coarse `sheets:spreadsheet` or the legacy `sheets:spreadsheet:readonly`,
-since sheets is mid-migration the way calendar is. Grant in the Lark console
-first, then add to `LARK_OAUTH_SCOPES`; the reverse order asks for a scope the
-app does not hold and can break authorization for everyone at once. Every user
-re-authorizes after that -- an existing token does not gain a scope.
+**Reading needs no sheets scope.** `LARK_OAUTH_SCOPES` was left alone and reads
+work anyway: the v2 endpoints predate Lark's granular scopes and ride on the
+`drive:drive` grant every existing token already carries. Confirmed 2026-09-05
+against an eight-tab spreadsheet, on a token minted before the tool existed and
+with nobody re-authorizing.
+
+That is a property of v2, not of sheets. A write tool, or the newer
+`sheet_ai/v2` endpoints `larksuite/cli` uses, will most likely want
+`sheets:spreadsheet:read` or the coarse `sheets:spreadsheet` -- a `99991679`
+answer names the scopes it will accept. If it comes to that, grant in the Lark
+console first and only then add it to `LARK_OAUTH_SCOPES`; the reverse order
+asks for a scope the app does not hold and can break authorization for everyone
+at once. Every user re-authorizes after that -- an existing token does not gain
+a scope.
 
 ## Read-only vs write tools
 
